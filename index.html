@@ -563,7 +563,7 @@ function setCardCount(btn, mode){
 
 var PROMPT_NAMES = 'This image contains one or more Pokemon cards laid flat.\n\nFor EVERY card find:\n- name: Full Pokemon name including suffix (EX, GX, V, VMAX, VSTAR, MEGA, TAG TEAM, Trainer name etc)\n- set_name: Set name printed on the card\n\nCards may be in a row or 2x2 grid - find ALL of them.\n\nReturn ONLY a JSON array, no markdown:\n[{"name":"...","set_name":"..."}]';
 
-var PROMPT_NUMBERS = 'This image shows the BOTTOM EDGE of one or more Pokemon cards. Your ONLY job is to find the collector/card number printed in each card\'s bottom-left or bottom-right corner.\n\nThe card number:\n- Always contains a slash like 044/068 or 8/82 or RC31/RC32 or GG50/GG70 or 187/159\n- Is tiny text near the very bottom corners\n- CHECK BOTH bottom-left AND bottom-right corners\n- Appears after the illustrator credit line\n\nNOT the card number: HP values, attack damage, weakness, resistance numbers.\n\nThere are CARDCOUNT card(s) shown. Return exactly CARDCOUNT number(s) in order left-to-right, top-to-bottom.\n\nReturn ONLY a JSON array:\n[{"card_number":"..."},{"card_number":"..."}]\nUse empty string if truly unreadable.';
+var PROMPT_NUMBERS = 'You are a JSON API. Respond with ONLY a JSON array, no explanation, no markdown, no text before or after.\n\nThis image shows the bottom portion of CARDCOUNT Pokemon card(s). Find the collector number in each card\'s bottom-left or bottom-right corner. It always has a slash like 044/068 or 8/82 or GG50/GG70. Ignore HP numbers, attack damage, weakness values.\n\nRespond with EXACTLY this format and nothing else:\n[{"card_number":"..."},{"card_number":"..."}]\n\nCARDCOUNT items, left-to-right top-to-bottom order. Empty string if unreadable. JSON ONLY.';
 
 var PROMPT = PROMPT_NAMES;
 
@@ -577,10 +577,11 @@ async function runNumberScan(apiKey, stripB64, nameArr, cardCount){
       apiKey:apiKey,
       model:'claude-sonnet-4-20250514',
       max_tokens:500,
+      system:'You are a JSON-only API. You never explain, never use markdown. You only output raw JSON arrays.',
       messages:[{role:'user',content:[
         {type:'image',source:{type:'base64',media_type:'image/jpeg',data:stripB64}},
         {type:'text',text:prompt}
-      ]}]
+      ]},{role:'assistant',content:'['}]
     })
   });
   var text = await res.text();
@@ -590,6 +591,8 @@ async function runNumberScan(apiKey, stripB64, nameArr, cardCount){
   var raw='';
   for(var i=0;i<(data.content||[]).length;i++){if(data.content[i].type==='text'){raw=data.content[i].text;break;}}
   raw=raw.replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
+  // Prepend '[' because we used assistant prefill starting with '['
+  if(!raw.startsWith('[')) raw='['+raw;
   var nums;
   try{nums=JSON.parse(raw);}catch(e){log('Number scan parse fail: '+raw.substring(0,80),'e');return nameArr;}
   // Merge numbers into name array by index
