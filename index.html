@@ -411,20 +411,21 @@ function readBlob(blob,mime,name){
     var img=new Image();
     img.onload=function(){
       var iw=img.naturalWidth, ih=img.naturalHeight;
-      var stripH=Math.round(ih*0.27);
+      var topH=Math.round(ih*0.20), botH=Math.round(ih*0.18);
       var maxW=640, scale=Math.min(1,maxW/iw);
-      var dw=Math.round(iw*scale), dStrip=Math.round(stripH*scale);
+      var dw=Math.round(iw*scale);
+      var dTop=Math.round(topH*scale), dBot=Math.round(botH*scale);
       var c=document.createElement('canvas');
-      c.width=dw; c.height=dStrip*2;
+      c.width=dw; c.height=dTop+dBot;
       var ctx=c.getContext('2d');
-      ctx.drawImage(img,0,0,iw,stripH,0,0,dw,dStrip);
-      ctx.drawImage(img,0,ih-stripH,iw,stripH,0,dStrip,dw,dStrip);
+      ctx.drawImage(img,0,0,iw,topH,0,0,dw,dTop);
+      ctx.drawImage(img,0,ih-botH,iw,botH,0,dTop,dw,dBot);
       var cropped=c.toDataURL('image/jpeg',0.92);
       currentB64=cropped.substring(cropped.indexOf(',')+1); currentMime='image/jpeg'; foundCards=[];
       previewImg.src=url; imgNameEl.textContent=name;
       dropZone.style.display='none'; previewArea.style.display='block';
       btnScan.style.display='block'; showResultsPlaceholder();
-      log('Upload strips: '+dw+'x'+(dStrip*2)+' b64='+currentB64.length+'chars','ok');
+      log('Upload strips: top='+dTop+'px bot='+dBot+'px wide='+dw+' b64='+currentB64.length+'chars','ok');
     };
     img.src=url;
   };
@@ -453,17 +454,23 @@ btnScan.onclick=function(){
 };
 
 // ── Core API (via Cloudflare Worker) ──────────────────────────
-var PROMPT = 'This image shows TWO horizontal strips cropped from Pokemon card(s):\n' +
-  '- TOP STRIP: the top portion of the card(s) containing the Pokemon name and HP\n' +
-  '- BOTTOM STRIP: the bottom portion of the card(s) containing the card number and set symbol\n\n' +
-  'The middle artwork has been removed to save space.\n\n' +
-  'For EVERY card visible, extract:\n' +
-  '- name: Full Pokemon name from the TOP strip, including any suffix (EX, GX, V, VMAX, VSTAR, etc)\n' +
-  '- card_number: The card number from the BOTTOM strip only. It appears in the bottom-left or bottom-right corner in format like 025/102 or SV04 or 001/198. Ignore any numbers in the top strip.\n' +
-  '- set_name: The set name or set symbol from the BOTTOM strip\n\n' +
-  'Return ONLY a valid JSON array:\n' +
-  '[{"name":"...","card_number":"...","set_name":"..."}]\n\n' +
-  'If no cards are visible return []. Raw JSON only, no markdown, no explanation.';
+var PROMPT = 'This image shows two cropped strips from one or more vertical Pokemon cards laid flat.\n' +
+  'TOP STRIP = just the name bar at the very top of each card.\n' +
+  'BOTTOM STRIP = just the very bottom edge of each card where the card number is printed.\n\n' +
+  'CRITICAL RULES:\n' +
+  '- card_number is ONLY the collector number printed at the bottom-left or bottom-right of the card. It looks like 44/68 or 029/104 or RC31/RC32 or 101/198.\n' +
+  '- NEVER extract or return any HP value. HP and the number after it (e.g. HP 300, HP 220, 300 HP) must be completely ignored and never used anywhere in your response.\n' +
+  '- A valid card_number always contains a slash like 044/068 or a set prefix like RC31/RC32. If you cannot find one, return an empty string for card_number.\n' +
+  '- NEVER use attack damage numbers as the card number.\n' +
+  '- The card number is always in the BOTTOM strip, never the top strip.\n' +
+  '- Cards are vertical (portrait orientation). Multiple cards appear side by side.\n\n' +
+  'For EVERY card visible extract:\n' +
+  '- name: Full Pokemon name including suffix (EX, GX, V, VMAX, VSTAR, MEGA, TAG TEAM, etc)\n' +
+  '- card_number: Collector number from bottom strip only (format: NNN/NNN or similar)\n' +
+  '- set_name: Set name if visible\n\n' +
+  'Return ONLY valid JSON array:\n' +
+  '[{"name":"...","card_number":"...","set_name":"..."}]\n' +
+  'If no cards visible return []. Raw JSON only, no markdown.';
 
 async function runScan(apiKey,b64,mime){
   log('API call '+b64.length+'chars mime='+mime);
@@ -612,20 +619,22 @@ function triggerLiveScan(){
   var vw=camVideo.videoWidth, vh=camVideo.videoHeight;
   if(!vw||!vh||vw<100){log('Video not ready yet','w');toast('Camera still starting…');return;}
 
-  // Crop top 28% and bottom 28% of the frame, stitch vertically
-  var stripH = Math.round(vh * 0.28);
-  var maxW = 640; // keep small for fast API calls
+  // Top 20% = name bar only, Bottom 18% = card number area only
+  var topH   = Math.round(vh * 0.20);
+  var botH   = Math.round(vh * 0.18);
+  var maxW = 640;
   var scale = Math.min(1, maxW / vw);
-  var dw = Math.round(vw * scale);
-  var dStrip = Math.round(stripH * scale);
-  snapCanvas.width = dw;
-  snapCanvas.height = dStrip * 2;
+  var dw     = Math.round(vw * scale);
+  var dTop   = Math.round(topH * scale);
+  var dBot   = Math.round(botH * scale);
+  snapCanvas.width  = dw;
+  snapCanvas.height = dTop + dBot;
   var ctx = snapCanvas.getContext('2d');
-  ctx.drawImage(camVideo, 0, 0, vw, stripH, 0, 0, dw, dStrip);
-  ctx.drawImage(camVideo, 0, vh - stripH, vw, stripH, 0, dStrip, dw, dStrip);
+  ctx.drawImage(camVideo, 0, 0,        vw, topH, 0,    0, dw, dTop);
+  ctx.drawImage(camVideo, 0, vh - botH, vw, botH, 0, dTop, dw, dBot);
   var dataUrl = snapCanvas.toDataURL('image/jpeg', 0.88);
   var b64 = dataUrl.substring(dataUrl.indexOf(',') + 1);
-  log('Strips: top+bottom '+dw+'x'+(dStrip*2)+' b64='+b64.length+'chars');
+  log('Strips: top '+dTop+'px bot '+dBot+'px wide='+dw+' b64='+b64.length+'chars');
 
   liveScanning=true;
   btnCapture.disabled=true;
