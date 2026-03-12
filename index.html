@@ -412,7 +412,7 @@ function readBlob(blob,mime,name){
     img.onload=function(){
       var iw=img.naturalWidth, ih=img.naturalHeight;
       var stripH=Math.round(ih*0.27);
-      var maxW=1200, scale=Math.min(1,maxW/iw);
+      var maxW=640, scale=Math.min(1,maxW/iw);
       var dw=Math.round(iw*scale), dStrip=Math.round(stripH*scale);
       var c=document.createElement('canvas');
       c.width=dw; c.height=dStrip*2;
@@ -546,8 +546,11 @@ function startLive(){
       setLiveStatus('idle','Ready — tap Scan Now');
       log('Camera: '+stream.getVideoTracks()[0].label,'ok');
       toast('Camera ready!','success');
-      // Start auto-scan countdown if interval is set
-      if(liveIntervalSec>0) startCountdown();
+      // Wait for video to actually have frames before starting auto-scan
+      camVideo.onloadedmetadata = function(){
+        log('Video ready '+camVideo.videoWidth+'x'+camVideo.videoHeight,'ok');
+        if(liveIntervalSec>0) startCountdown();
+      };
     })
     .catch(function(err){
       log('Camera error: '+err.name+' '+err.message,'e');
@@ -607,23 +610,20 @@ function triggerLiveScan(){
   var k=apiKeyEl.value.trim()||localStorage.getItem('pokescan_key')||'';
   if(!k){setLiveStatus('err','No API key');return;}
   var vw=camVideo.videoWidth, vh=camVideo.videoHeight;
-  if(!vw||!vh){log('Video not ready','w');return;}
+  if(!vw||!vh||vw<100){log('Video not ready yet','w');toast('Camera still starting…');return;}
 
-  // Crop top 25% and bottom 25% of the frame, stitch vertically
-  // This keeps the card name (top) and card number (bottom) while skipping artwork
-  var stripH = Math.round(vh * 0.27);
-  var maxW = 1200;
+  // Crop top 28% and bottom 28% of the frame, stitch vertically
+  var stripH = Math.round(vh * 0.28);
+  var maxW = 640; // keep small for fast API calls
   var scale = Math.min(1, maxW / vw);
   var dw = Math.round(vw * scale);
   var dStrip = Math.round(stripH * scale);
   snapCanvas.width = dw;
   snapCanvas.height = dStrip * 2;
   var ctx = snapCanvas.getContext('2d');
-  // Top strip
   ctx.drawImage(camVideo, 0, 0, vw, stripH, 0, 0, dw, dStrip);
-  // Bottom strip
   ctx.drawImage(camVideo, 0, vh - stripH, vw, stripH, 0, dStrip, dw, dStrip);
-  var dataUrl = snapCanvas.toDataURL('image/jpeg', 0.90);
+  var dataUrl = snapCanvas.toDataURL('image/jpeg', 0.88);
   var b64 = dataUrl.substring(dataUrl.indexOf(',') + 1);
   log('Strips: top+bottom '+dw+'x'+(dStrip*2)+' b64='+b64.length+'chars');
 
