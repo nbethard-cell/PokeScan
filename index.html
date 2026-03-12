@@ -204,7 +204,7 @@
   .cbar{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}
   .clbl{font-size:0.63rem;letter-spacing:2px;text-transform:uppercase;color:var(--muted);}
   .clbl span{color:var(--accent);font-weight:600;}
-  #corrections-list{padding:12px 16px;display:flex;flex-direction:column;gap:8px;}
+  #corrections-list{padding:12px 16px;display:flex;flex-direction:column;gap:8px;max-height:320px;overflow-y:auto;}
   .corr-empty{text-align:center;color:var(--muted);font-size:0.73rem;padding:18px 0;}
   .corr-item{display:grid;grid-template-columns:1fr 1fr auto auto;gap:8px;align-items:center;background:rgba(74,240,255,0.04);border:1px solid rgba(74,240,255,0.15);border-radius:8px;padding:8px 12px;}
   @media(max-width:600px){.corr-item{grid-template-columns:1fr 1fr;}}
@@ -342,7 +342,7 @@
   <div class="cpanel" id="corrections-panel">
     <div class="cbar">
       <div class="clbl">Card Corrections: <span id="corr-count">0</span></div>
-      <button class="btn br" id="btn-clr-corrections" onclick="clearAllCorrections()">✕ Clear All</button>
+      <div style="display:flex;gap:7px;"><button class="btn bb" onclick="updateAllCorrections()">↑ Update All</button><button class="btn br" onclick="clearAllCorrections()">✕ Clear All</button></div>
     </div>
     <div id="corrections-list">
       <div class="corr-empty">No corrections yet — edit a card number and save to remember it</div>
@@ -386,7 +386,7 @@ var cards = [];
 try { cards = JSON.parse(localStorage.getItem('pokescan_cards')||'[]'); } catch(e){}
 var corrections = {};
 try { corrections = JSON.parse(localStorage.getItem('pokescan_corrections')||'{}'); } catch(e){}
-var currentB64 = null, currentMime = 'image/jpeg', foundCards = [];
+var currentB64 = null, currentStripB64 = null, currentMime = 'image/jpeg', foundCards = [];
 var camStream = null, liveScanning = false, liveIntervalSec = 10;
 var liveCountTimer = null, liveCountdown = 0, liveCards = [];
 var snapCanvas = document.createElement('canvas');
@@ -484,10 +484,33 @@ function readBlob(blob,mime,name){
         log('Re-encoded smaller: '+b64candidate.length+'chars','w');
       }
       currentB64=b64candidate; currentMime='image/jpeg'; foundCards=[];
+
+      // Also prepare high-res bottom strip for card number scan
+      // For 2x2 grid: bottom 50% of image contains row 2, take bottom 25% of each row
+      var numRows = (dh > dw * 1.2) ? 2 : 1;
+      var rowH2 = Math.round(dh / numRows);
+      var botPct = 0.25;
+      var botH2 = Math.round(rowH2 * botPct);
+      // Scale up bottom strip to 1600px wide for better OCR
+      var stripScale = Math.min(3, 1600 / dw);
+      var sdw = Math.round(dw * stripScale);
+      var sdBot = Math.round(botH2 * stripScale);
+      var sc = document.createElement('canvas');
+      sc.width = sdw; sc.height = sdBot * numRows;
+      var sctx = sc.getContext('2d');
+      for(var row=0; row<numRows; row++){
+        var botY2 = (row+1)*rowH2 - botH2;
+        sctx.drawImage(c, 0, botY2, dw, botH2, 0, row*sdBot, sdw, sdBot);
+      }
+      var stripB64 = sc.toDataURL('image/jpeg', 0.95).split(',')[1];
+      // If strip too large, reduce quality
+      if(stripB64.length > 3500000) stripB64 = sc.toDataURL('image/jpeg', 0.75).split(',')[1];
+      currentStripB64 = stripB64;
+
       previewImg.src=url; imgNameEl.textContent=name;
       dropZone.style.display='none'; previewArea.style.display='block';
       btnScan.style.display='block'; showResultsPlaceholder();
-      log('Full image: '+dw+'x'+dh+' b64='+currentB64.length+'chars','ok');
+      log('Full image: '+dw+'x'+dh+' b64='+currentB64.length+' strip='+stripB64.length+'chars','ok');
     };
     img.src=url;
   };
@@ -496,7 +519,7 @@ function readBlob(blob,mime,name){
 
 function resetUpload(){
   dropZone.style.display=''; previewArea.style.display='none';
-  btnScan.style.display='none'; previewImg.src=''; currentB64=null; foundCards=[];
+  btnScan.style.display='none'; previewImg.src=''; currentB64=null; currentStripB64=null; foundCards=[];
   showResultsPlaceholder();
 }
 
@@ -505,9 +528,18 @@ btnScan.onclick=function(){
   var k=apiKeyEl.value.trim()||localStorage.getItem('pokescan_key')||'';
   if(!k){toast('Enter your API key first','error');return;}
   if(!currentB64){toast('Upload an image first','error');return;}
-  btnScan.disabled=true; btnScan.textContent='Scanning…';
+  btnScan.disabled=true; btnScan.textContent='Step 1/2: Finding cards…';
   showResultsLoading();
+  // Call 1: full image to get names and set names
   runScan(k,currentB64,currentMime,uploadCardCount).then(function(arr){
+    log('Pass 1 done: '+arr.length+' cards, now scanning card numbers…','ok');
+    btnScan.textContent='Step 2/2: Reading card numbers…';
+    // Call 2: high-res bottom strip to get card numbers
+    var stripB64 = currentStripB64 || currentB64;
+    return runNumberScan(k, stripB64, arr, uploadCardCount).then(function(merged){
+      return merged;
+    });
+  }).then(function(arr){
     arr=applyCorrections(arr); foundCards=arr; showResultsCards(arr);
     toast(arr.length+' card'+(arr.length===1?'':'s')+' found!','success');
   }).catch(function(e){
@@ -529,6 +561,50 @@ function setCardCount(btn, mode){
 
 // ── Core API (via Cloudflare Worker) ──────────────────────────
 
+var PROMPT_NAMES = 'This image contains one or more Pokemon cards laid flat.\n\nFor EVERY card find:\n- name: Full Pokemon name including suffix (EX, GX, V, VMAX, VSTAR, MEGA, TAG TEAM, Trainer name etc)\n- set_name: Set name printed on the card\n\nCards may be in a row or 2x2 grid - find ALL of them.\n\nReturn ONLY a JSON array, no markdown:\n[{"name":"...","set_name":"..."}]';
+
+var PROMPT_NUMBERS = 'This image shows the BOTTOM EDGE of one or more Pokemon cards. Your ONLY job is to find the collector/card number printed in each card\'s bottom-left or bottom-right corner.\n\nThe card number:\n- Always contains a slash like 044/068 or 8/82 or RC31/RC32 or GG50/GG70 or 187/159\n- Is tiny text near the very bottom corners\n- CHECK BOTH bottom-left AND bottom-right corners\n- Appears after the illustrator credit line\n\nNOT the card number: HP values, attack damage, weakness, resistance numbers.\n\nThere are CARDCOUNT card(s) shown. Return exactly CARDCOUNT number(s) in order left-to-right, top-to-bottom.\n\nReturn ONLY a JSON array:\n[{"card_number":"..."},{"card_number":"..."}]\nUse empty string if truly unreadable.';
+
+var PROMPT = PROMPT_NAMES;
+
+async function runNumberScan(apiKey, stripB64, nameArr, cardCount){
+  var prompt = PROMPT_NUMBERS.replace(/CARDCOUNT/g, nameArr.length||cardCount||1);
+  log('Number scan: '+stripB64.length+'chars for '+nameArr.length+' cards');
+  var res = await fetch(WORKER,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      apiKey:apiKey,
+      model:'claude-sonnet-4-20250514',
+      max_tokens:500,
+      messages:[{role:'user',content:[
+        {type:'image',source:{type:'base64',media_type:'image/jpeg',data:stripB64}},
+        {type:'text',text:prompt}
+      ]}]
+    })
+  });
+  var text = await res.text();
+  var data;
+  try{data=JSON.parse(text);}catch(e){log('Number scan bad JSON','e');return nameArr;}
+  if(!res.ok){log('Number scan HTTP error: '+res.status,'e');return nameArr;}
+  var raw='';
+  for(var i=0;i<(data.content||[]).length;i++){if(data.content[i].type==='text'){raw=data.content[i].text;break;}}
+  raw=raw.replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
+  var nums;
+  try{nums=JSON.parse(raw);}catch(e){log('Number scan parse fail: '+raw.substring(0,80),'e');return nameArr;}
+  // Merge numbers into name array by index
+  var merged = nameArr.map(function(c,i){
+    var n = nums[i];
+    return {
+      name: c.name||'',
+      set_name: c.set_name||'',
+      card_number: (n && n.card_number) ? n.card_number : (c.card_number||'')
+    };
+  });
+  log('Numbers merged: '+merged.map(function(c){return c.card_number||'?';}).join(', '),'ok');
+  return merged;
+}
+
 var PROMPT = 'This image contains one or more Pokemon cards laid flat.\n\nFor EVERY card in the image extract:\n- name: Full Pokemon name including any suffix (EX, GX, V, VMAX, VSTAR, MEGA, TAG TEAM, etc)\n- card_number: The collector number in SMALL TEXT at the bottom-left OR bottom-right corner. Always has a slash like 44/68 or 022/108 or RC31/RC32. Check BOTH corners carefully.\n- set_name: The set name on the card\n\nCRITICAL card_number rules:\n- MUST contain a slash or set prefix\n- Always tiny text at very bottom edge\n- NEVER use HP values (300 HP, 220 HP etc) - ignore any number near HP\n- NEVER use attack damage, weakness, resistance numbers\n- Return empty string if cannot find it\n\nCards may be in a row or 2x2 grid - find ALL of them.\n\nReturn ONLY a JSON array, no markdown:\n[{"name":"...","card_number":"...","set_name":"..."}]';
 
 async function runScan(apiKey,b64,mime,cardCount){
@@ -542,7 +618,7 @@ async function runScan(apiKey,b64,mime,cardCount){
       max_tokens:2000,
       messages:[{role:'user',content:[
         {type:'image',source:{type:'base64',media_type:mime,data:b64}},
-        {type:'text',text: cardCount>0 ? PROMPT + '\n\nIMPORTANT: There are EXACTLY '+cardCount+' card(s) in this image. You MUST return exactly '+cardCount+' object(s) in the JSON array, one per card. Do not return fewer.' : PROMPT}
+        {type:'text',text: cardCount>0 ? PROMPT_NAMES + '\n\nIMPORTANT: There are EXACTLY '+cardCount+' card(s) in this image. You MUST return exactly '+cardCount+' object(s). Do not return fewer.' : PROMPT_NAMES}
       ]}]
     })
   });
@@ -833,6 +909,19 @@ function saveCorrection(name, card_number, set_name){
   localStorage.setItem('pokescan_corrections', JSON.stringify(corrections));
   renderCorrections();
   log('Correction saved: '+name+' = '+card_number,'ok');
+}
+
+function updateAllCorrections(){
+  var keys=Object.keys(corrections);
+  if(!keys.length){toast('No corrections to update');return;}
+  keys.forEach(function(k){
+    var kid=k.replace(/[^a-z0-9]/g,'_');
+    var inp=document.getElementById('cinput-'+kid);
+    if(inp) corrections[k].card_number=inp.value;
+  });
+  localStorage.setItem('pokescan_corrections',JSON.stringify(corrections));
+  toast('All corrections updated!','success');
+  log('Updated all '+keys.length+' corrections','ok');
 }
 
 function clearAllCorrections(){
