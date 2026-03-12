@@ -370,7 +370,7 @@
     </div>
     <div class="twrap">
       <table>
-        <thead><tr><th>#</th><th>Full Name</th><th>Card Number</th><th>Set</th><th></th></tr></thead>
+        <thead><tr><th>#</th><th>Full Name</th><th>Card Number</th><th>Set</th><th>QTY</th><th></th></tr></thead>
         <tbody id="cards-body"></tbody>
       </table>
     </div>
@@ -629,7 +629,7 @@ function showResultsCards(arr){
 function updateFound(el){var idx=parseInt(el.dataset.idx);if(foundCards[idx]){foundCards[idx][el.dataset.key]=el.value;if(el.dataset.key==='card_number')foundCards[idx]._manualEdit=true;}}
 function saveOne(idx){
   var c=foundCards[idx]; if(!c)return;
-  var e={name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',_id:Date.now()};
+  var e={name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:parseInt(c.qty)||1,_id:Date.now()};
   cards.push(e);saveCards();renderTable();toast((e.name||'Card')+' saved!','success');
   // Remember correction if card number was manually edited
   if(c._manualEdit && c.name && c.card_number){
@@ -640,7 +640,7 @@ function saveOne(idx){
   if(b){b.textContent='✓ Saved';b.className='btn-save-one saved';b.disabled=true;}
 }
 function saveAll(){
-  foundCards.forEach(function(c,i){cards.push({name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',_id:Date.now()+i});});
+  foundCards.forEach(function(c,i){cards.push({name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:parseInt(c.qty)||1,_id:Date.now()+i});});
   saveCards();renderTable();toast('All '+foundCards.length+' cards saved!','success');
   document.querySelectorAll('.btn-save-one').forEach(function(b){b.textContent='✓ Saved';b.className='btn-save-one saved';b.disabled=true;});
 }
@@ -813,7 +813,7 @@ function prependLiveCard(c){
 
 function liveSaveOne(lid){
   var c=liveCards.find(function(x){return x._lid==lid;}); if(!c)return;
-  cards.push({name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',_id:Date.now()});
+  cards.push({name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:1,_id:Date.now()});
   saveCards(); renderTable();
   if(c._manualEdit && c.name && c.card_number) saveCorrection(c.name, c.card_number, c.set_name);
   toast((c.name||'Card')+' saved!','success');
@@ -843,7 +843,7 @@ function liveSaveAll(){
   var unsaved=liveCards.filter(function(c){var b=document.querySelector('#lci-'+c._lid+' .lci-save');return b&&!b.disabled;});
   if(!unsaved.length){toast('All already saved!');return;}
   unsaved.forEach(function(c,i){
-    cards.push({name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',_id:Date.now()+i});
+    cards.push({name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:1,_id:Date.now()+i});
     var b=document.querySelector('#lci-'+c._lid+' .lci-save');
     if(b){b.textContent='✓ Saved';b.className='lci-save saved';b.disabled=true;}
   });
@@ -941,25 +941,26 @@ function renderTable(){
   var tbody=document.getElementById('cards-body');
   if(!cards.length){tbody.innerHTML='<tr class="erow"><td colspan="5">No cards yet.</td></tr>';return;}
   tbody.innerHTML=cards.map(function(c,i){
-    return '<tr><td class="tdn">'+(i+1)+'</td><td class="tdname">'+esc(c.name)+'</td><td>'+esc(c.card_number)+'</td><td>'+esc(c.set_name)+'</td><td><button class="tddel" onclick="delCard('+c._id+')">✕</button></td></tr>';
+    return '<tr><td class="tdn">'+(i+1)+'</td><td class="tdname">'+esc(c.name)+'</td><td>'+esc(c.card_number)+'</td><td>'+esc(c.set_name)+'</td><td><input type="number" min="1" value="'+(c.qty||1)+'" style="width:52px;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:5px;padding:3px 6px;color:var(--text);font-size:0.78rem;text-align:center;" onchange="updateQty('+c._id+',this.value)"/></td><td><button class="tddel" onclick="delCard('+c._id+')">✕</button></td></tr>';
   }).join('');
 }
 function delCard(id){cards=cards.filter(function(c){return c._id!==id;});saveCards();renderTable();}
+function updateQty(id,val){var c=cards.find(function(x){return x._id===id;});if(c){c.qty=Math.max(1,parseInt(val)||1);saveCards();}}
 function saveCards(){try{localStorage.setItem('pokescan_cards',JSON.stringify(cards));}catch(e){}}
 
 // ── Export ────────────────────────────────────────────────────
 document.getElementById('btn-csv').onclick=function(){
   if(!cards.length){toast('Nothing to export','error');return;}
-  var rows=[['Full Name','Card Number','Set']];
-  cards.forEach(function(c){rows.push([c.name||'',c.card_number||'',c.set_name||'']);});
+  var rows=[['Full Name','Card Number','Set','QTY']];
+  cards.forEach(function(c){rows.push([c.name||'',c.card_number||'',c.set_name||'',c.qty||1]);});
   var csv=rows.map(function(r){return r.map(function(v){return'"'+v.replace(/"/g,'""')+'"';}).join(',');}).join('\n');
   dl(new Blob([csv],{type:'text/csv'}),'pokemon_collection.csv');
   toast('CSV downloaded!','success');
 };
 document.getElementById('btn-sheets').onclick=function(){
   if(!cards.length){toast('Nothing to export','error');return;}
-  var rows=[['Full Name','Card Number','Set']];
-  cards.forEach(function(c){rows.push([c.name||'',c.card_number||'',c.set_name||'']);});
+  var rows=[['Full Name','Card Number','Set','QTY']];
+  cards.forEach(function(c){rows.push([c.name||'',c.card_number||'',c.set_name||'',c.qty||1]);});
   var tsv=rows.map(function(r){return r.join('\t');}).join('\n');
   navigator.clipboard.writeText(tsv).then(function(){
     window.open('https://sheets.new','_blank'); toast('Copied! Paste into Sheets (Ctrl+V)','success');
