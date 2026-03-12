@@ -198,6 +198,25 @@
   #toast.show{opacity:1;transform:translateY(0);}
   #toast.show.success{border-color:rgba(0,229,160,0.4);}
   #toast.show.error{border-color:rgba(255,80,80,0.4);}
+
+  /* Corrections panel */
+  .cpanel{background:var(--card-bg);border:1px solid var(--border);border-radius:16px;overflow:hidden;margin-bottom:18px;}
+  .cbar{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}
+  .clbl{font-size:0.63rem;letter-spacing:2px;text-transform:uppercase;color:var(--muted);}
+  .clbl span{color:var(--accent);font-weight:600;}
+  #corrections-list{padding:12px 16px;display:flex;flex-direction:column;gap:8px;}
+  .corr-empty{text-align:center;color:var(--muted);font-size:0.73rem;padding:18px 0;}
+  .corr-item{display:grid;grid-template-columns:1fr 1fr auto auto;gap:8px;align-items:center;background:rgba(74,240,255,0.04);border:1px solid rgba(74,240,255,0.15);border-radius:8px;padding:8px 12px;}
+  @media(max-width:600px){.corr-item{grid-template-columns:1fr 1fr;}}
+  .corr-input{background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:6px;padding:5px 8px;color:var(--text);font-size:0.78rem;outline:none;font-family:inherit;width:100%;}
+  .corr-input:focus{border-color:var(--accent);}
+  .corr-save{padding:4px 10px;background:rgba(74,240,255,0.1);color:var(--accent);border:1px solid rgba(74,240,255,0.25);border-radius:6px;font-size:0.66rem;cursor:pointer;font-family:inherit;white-space:nowrap;}
+  .corr-save:hover{background:rgba(74,240,255,0.2);}
+  .corr-del{padding:4px 8px;background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.78rem;border-radius:6px;}
+  .corr-del:hover{color:var(--red);background:rgba(255,60,60,0.1);}
+  /* Highlight corrected fields */
+  .cr-input.corrected{border-color:rgba(74,240,255,0.5);background:rgba(74,240,255,0.06);}
+  .corrected-badge{font-size:0.58rem;color:var(--accent);letter-spacing:1px;margin-top:2px;}
 </style>
 </head>
 <body>
@@ -292,6 +311,18 @@
     </div>
   </div>
 
+
+  <!-- Corrections / Overrides -->
+  <div class="cpanel" id="corrections-panel">
+    <div class="cbar">
+      <div class="clbl">Card Corrections: <span id="corr-count">0</span></div>
+      <button class="btn br" id="btn-clr-corrections" onclick="clearAllCorrections()">✕ Clear All</button>
+    </div>
+    <div id="corrections-list">
+      <div class="corr-empty">No corrections yet — edit a card number and save to remember it</div>
+    </div>
+  </div>
+
   <!-- Debug -->
   <div class="debug-panel">
     <div class="dhead">
@@ -327,6 +358,8 @@ var WORKER = 'https://solitary-hill-3d9b.nbethard.workers.dev/';
 // ── State ─────────────────────────────────────────────────────
 var cards = [];
 try { cards = JSON.parse(localStorage.getItem('pokescan_cards')||'[]'); } catch(e){}
+var corrections = {};
+try { corrections = JSON.parse(localStorage.getItem('pokescan_corrections')||'{}'); } catch(e){}
 var currentB64 = null, currentMime = 'image/jpeg', foundCards = [];
 var camStream = null, liveScanning = false, liveIntervalSec = 10;
 var liveCountTimer = null, liveCountdown = 0, liveCards = [];
@@ -411,8 +444,8 @@ function readBlob(blob,mime,name){
     var img=new Image();
     img.onload=function(){
       var iw=img.naturalWidth, ih=img.naturalHeight;
-      var topH=Math.round(ih*0.20), botH=Math.round(ih*0.18);
-      var maxW=640, scale=Math.min(1,maxW/iw);
+      var topH=Math.round(ih*0.22), botH=Math.round(ih*0.22);
+      var maxW=1400, scale=Math.min(1,maxW/iw);
       var dw=Math.round(iw*scale);
       var dTop=Math.round(topH*scale), dBot=Math.round(botH*scale);
       var c=document.createElement('canvas');
@@ -446,7 +479,7 @@ btnScan.onclick=function(){
   btnScan.disabled=true; btnScan.textContent='Scanning…';
   showResultsLoading();
   runScan(k,currentB64,currentMime).then(function(arr){
-    foundCards=arr; showResultsCards(arr);
+    arr=applyCorrections(arr); foundCards=arr; showResultsCards(arr);
     toast(arr.length+' card'+(arr.length===1?'':'s')+' found!','success');
   }).catch(function(e){
     log('Scan error: '+e.message,'e'); toast('Error: '+e.message,'error'); showResultsPlaceholder();
@@ -460,10 +493,11 @@ var PROMPT = 'This image shows two cropped strips from one or more vertical Poke
   'CRITICAL RULES:\n' +
   '- card_number is ONLY the collector number printed at the bottom-left or bottom-right of the card. It looks like 44/68 or 029/104 or RC31/RC32 or 101/198.\n' +
   '- NEVER extract or return any HP value. HP and the number after it (e.g. HP 300, HP 220, 300 HP) must be completely ignored and never used anywhere in your response.\n' +
-  '- A valid card_number always contains a slash like 044/068 or a set prefix like RC31/RC32. If you cannot find one, return an empty string for card_number.\n' +
+  '- A valid card_number always contains a slash like 022/108 or 044/068 or a set prefix like RC31/RC32. It is always the LAST number printed at the very bottom edge of the card, after the illustrator credit and copyright line. If you cannot find one, return empty string.\n' +
+  '- NEVER use retreat cost numbers, weakness numbers, resistance numbers, or attack damage numbers as the card number.\n' +
   '- NEVER use attack damage numbers as the card number.\n' +
   '- The card number is always in the BOTTOM strip, never the top strip.\n' +
-  '- Cards are vertical (portrait orientation). Multiple cards appear side by side.\n\n' +
+  '- Cards are vertical (portrait orientation). There may be 1, 2, 3 or 4 cards arranged in a row or 2x2 grid. Find ALL of them.\n\n' +
   'For EVERY card visible extract:\n' +
   '- name: Full Pokemon name including suffix (EX, GX, V, VMAX, VSTAR, MEGA, TAG TEAM, etc)\n' +
   '- card_number: Collector number from bottom strip only (format: NNN/NNN or similar)\n' +
@@ -513,7 +547,7 @@ function showResultsCards(arr){
   arr.forEach(function(c,i){
     html+='<div class="card-result" id="cr-'+i+'">'+
       '<div><div class="cr-label">Full Name</div><input class="cr-input" data-idx="'+i+'" data-key="name" value="'+esc(c.name||'')+'" oninput="updateFound(this)"/></div>'+
-      '<div><div class="cr-label">Card Number</div><input class="cr-input" data-idx="'+i+'" data-key="card_number" value="'+esc(c.card_number||'')+'" oninput="updateFound(this)"/></div>'+
+      '<div><div class="cr-label">Card Number</div><input class="cr-input'+(c._corrected?' corrected':'')+'" data-idx="'+i+'" data-key="card_number" value="'+esc(c.card_number||'')+'" oninput="updateFound(this)"/>'+(c._corrected?'<div class="corrected-badge">✦ from memory</div>':''  )+'</div>'+
       '<div><div class="cr-label">Set</div><input class="cr-input" data-idx="'+i+'" data-key="set_name" value="'+esc(c.set_name||'')+'" oninput="updateFound(this)"/></div>'+
       '<div class="cr-actions"><div class="cr-num">'+(i+1)+'</div>'+
         '<button class="btn-save-one" onclick="saveOne('+i+')">Save</button>'+
@@ -524,11 +558,16 @@ function showResultsCards(arr){
   resultsArea.innerHTML=html;
   document.getElementById('btn-save-all').onclick=saveAll;
 }
-function updateFound(el){var idx=parseInt(el.dataset.idx);if(foundCards[idx])foundCards[idx][el.dataset.key]=el.value;}
+function updateFound(el){var idx=parseInt(el.dataset.idx);if(foundCards[idx]){foundCards[idx][el.dataset.key]=el.value;if(el.dataset.key==='card_number')foundCards[idx]._manualEdit=true;}}
 function saveOne(idx){
   var c=foundCards[idx]; if(!c)return;
   var e={name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',_id:Date.now()};
   cards.push(e);saveCards();renderTable();toast((e.name||'Card')+' saved!','success');
+  // Remember correction if card number was manually edited
+  if(c._manualEdit && c.name && c.card_number){
+    saveCorrection(c.name, c.card_number, c.set_name);
+    toast((e.name||'Card')+' saved + correction remembered!','success');
+  }
   var b=document.querySelector('#cr-'+idx+' .btn-save-one');
   if(b){b.textContent='✓ Saved';b.className='btn-save-one saved';b.disabled=true;}
 }
@@ -643,6 +682,7 @@ function triggerLiveScan(){
   camCountdown.textContent='';
 
   runScan(k,b64,'image/jpeg').then(function(arr){
+    arr=applyCorrections(arr);
     setLiveStatus('ok', arr.length ? arr.length+' card'+(arr.length===1?'':'s')+' detected' : 'No cards — try again');
     if(arr.length) mergeLiveResults(arr);
     else toast('No cards detected — try again','');
@@ -706,7 +746,9 @@ function prependLiveCard(c){
 function liveSaveOne(lid){
   var c=liveCards.find(function(x){return x._lid==lid;}); if(!c)return;
   cards.push({name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',_id:Date.now()});
-  saveCards(); renderTable(); toast((c.name||'Card')+' saved!','success');
+  saveCards(); renderTable();
+  if(c._manualEdit && c.name && c.card_number) saveCorrection(c.name, c.card_number, c.set_name);
+  toast((c.name||'Card')+' saved!','success');
   var btn=document.querySelector('#lci-'+lid+' .lci-save');
   if(btn){btn.textContent='✓ Saved';btn.className='lci-save saved';btn.disabled=true;}
 }
@@ -738,6 +780,91 @@ function liveSaveAll(){
     if(b){b.textContent='✓ Saved';b.className='lci-save saved';b.disabled=true;}
   });
   saveCards(); renderTable(); toast(unsaved.length+' cards saved!','success');
+}
+
+
+// ── Corrections ───────────────────────────────────────────────
+function corrKey(name){ return (name||'').toLowerCase().trim(); }
+
+function applyCorrections(arr){
+  arr.forEach(function(c){
+    var k=corrKey(c.name);
+    if(corrections[k]){
+      log('Correction applied: '+c.name+' → '+corrections[k].card_number,'ok');
+      c._corrected = c.card_number !== corrections[k].card_number;
+      c.card_number = corrections[k].card_number;
+      if(corrections[k].set_name) c.set_name = corrections[k].set_name;
+    }
+  });
+  return arr;
+}
+
+function saveCorrection(name, card_number, set_name){
+  var k=corrKey(name);
+  corrections[k]={name:name, card_number:card_number, set_name:set_name||''};
+  localStorage.setItem('pokescan_corrections', JSON.stringify(corrections));
+  renderCorrections();
+  log('Correction saved: '+name+' = '+card_number,'ok');
+}
+
+function clearAllCorrections(){
+  if(!Object.keys(corrections).length) return;
+  if(!confirm('Clear all '+Object.keys(corrections).length+' correction(s)?')) return;
+  corrections={};
+  localStorage.setItem('pokescan_corrections','{}');
+  renderCorrections();
+  toast('Corrections cleared');
+}
+
+function deleteCorrection(k){
+  delete corrections[k];
+  localStorage.setItem('pokescan_corrections', JSON.stringify(corrections));
+  renderCorrections();
+  toast('Correction removed');
+}
+
+function updateCorrectionField(k, field, val){
+  if(corrections[k]) corrections[k][field]=val;
+}
+
+function saveCorrectionEdit(k){
+  if(corrections[k]){
+    localStorage.setItem('pokescan_corrections', JSON.stringify(corrections));
+    toast('Correction updated!','success');
+    log('Correction updated: '+corrections[k].name+' = '+corrections[k].card_number,'ok');
+  }
+}
+
+function renderCorrections(){
+  var keys=Object.keys(corrections);
+  document.getElementById('corr-count').textContent=keys.length;
+  var el=document.getElementById('corrections-list');
+  if(!keys.length){
+    el.innerHTML='<div class="corr-empty">No corrections yet — edit a card number and save to remember it</div>';
+    return;
+  }
+  el.innerHTML=keys.map(function(k){
+    var c=corrections[k];
+    var kid=k.replace(/[^a-z0-9]/g,'_');
+    var div=document.createElement('div');
+    div.className='corr-item'; div.id='corr-'+kid;
+    div.innerHTML=
+      '<div><div class="cr-label">Name</div><input class="corr-input" value="'+esc(c.name||'')+'" readonly style="opacity:0.6"/></div>'+
+      '<div><div class="cr-label">Card #</div><input class="corr-input" id="cinput-'+kid+'" value="'+esc(c.card_number||'')+'"/></div>'+
+      '<button class="corr-save" id="csave-'+kid+'">Update</button>'+
+      '<button class="corr-del" id="cdel-'+kid+'">✕</button>';
+    return div.outerHTML;
+  }).join('');
+  // Attach events after render
+  keys.forEach(function(k){
+    var kid=k.replace(/[^a-z0-9]/g,'_');
+    var inp=document.getElementById('cinput-'+kid);
+    var saveBtn=document.getElementById('csave-'+kid);
+    var delBtn=document.getElementById('cdel-'+kid);
+    if(inp) inp.addEventListener('input', function(){ updateCorrectionField(k,'card_number',this.value); });
+    if(saveBtn) saveBtn.addEventListener('click', function(){ saveCorrectionEdit(k); });
+    if(delBtn) delBtn.addEventListener('click', function(){ deleteCorrection(k); });
+  });
 }
 
 // ── Collection ────────────────────────────────────────────────
@@ -782,8 +909,9 @@ var _tt;
 function toast(msg,type){toastEl.textContent=msg;toastEl.className=type?'show '+type:'show';clearTimeout(_tt);_tt=setTimeout(function(){toastEl.className='';},3200);}
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
-log('Ready. Saved cards: '+cards.length);
+log('Ready. Saved cards: '+cards.length+' corrections: '+Object.keys(corrections).length);
 renderTable();
+renderCorrections();
 </script>
 </body>
 </html>
