@@ -598,7 +598,7 @@ async function runNumberScanPerCard(apiKey, crops, nameArr, cardCount){
   // Send each card's bottom crop individually for maximum accuracy
   var count = nameArr.length || cardCount || 1;
   log('Per-card number scan: '+count+' cards, '+crops.length+' crops');
-  var SINGLE_PROMPT = 'You are a JSON API. Respond with ONLY a JSON object, no text.\n\nThis image shows the BOTTOM portion of ONE Pokemon card. Find the collector number - tiny text in the bottom-left OR bottom-right corner, always containing a slash like 169/142 or 8/82 or GG50/GG70 or 118/094.\n\nCommon OCR errors to watch for: 1 misread as T or I, 6 misread as G, 9 misread as q. These are digits not letters.\n\nIgnore: HP values, attack damage, weakness/resistance numbers.\n\nReturn exactly: {"card_number":"..."} — empty string if not found. JSON ONLY.';
+  var SINGLE_PROMPT = 'You are a JSON API. Respond with ONLY a JSON object, no text.\n\nThis image shows the BOTTOM portion of ONE Pokemon card. Find the collector number - tiny text in the bottom-left OR bottom-right corner, always containing a slash like 169/142 or 8/82 or GG50/GG70 or 118/094.\n\nCRITICAL - common OCR misreads on small card text:\n- 1 misread as 7, T, or I (look carefully at vertical strokes - 1 is very common)\n- 6 misread as G\n- 9 misread as q\n- 8 misread as B\nThese are ALL digits. If you see letters mixed with digits (except known prefixes GG/RC/TG/SV/PR), it is a digit being misread.\n\nDouble-check every digit, especially the first digit of the number.\n\nIgnore: HP values, attack damage, weakness/resistance numbers.\n\nReturn exactly: {"card_number":"..."} — empty string if not found. JSON ONLY.';
 
   var results = [];
   for(var i = 0; i < count; i++){
@@ -627,8 +627,33 @@ async function runNumberScanPerCard(apiKey, crops, nameArr, cardCount){
       raw = raw.replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
       if(!raw.startsWith('{')) raw='{'+raw;
       var parsed = JSON.parse(raw);
-      log('Card '+(i+1)+' ('+nameArr[i].name+'): '+parsed.card_number,'ok');
-      results.push(parsed.card_number || '');
+      var cardNum = parsed.card_number || '';
+      // Quick sanity: if number part before slash starts with 7 and is 3 digits,
+      // it may be a misread 1 — flag it for a retry with extra hint
+      var needsRetry = false;
+      var m = cardNum.match(/^(\d+)\//);
+      if(m && m[1].length === 3 && m[1][0] === '7') needsRetry = true;
+      if(needsRetry){
+        log('Card '+(i+1)+' possible 7→1 misread ('+cardNum+'), retrying…','w');
+        try {
+          var retryPrompt = 'You are a JSON API. ONE Pokemon card bottom shown. Find collector number.\n\nI think I may have misread it as "'+cardNum+'" but the first digit might be 1 not 7 — please look very carefully at the first digit. Could it be 1 (one) instead of 7? Both look similar in small print.\n\nReturn: {"card_number":"..."} JSON ONLY.';
+          var res2 = await fetch(WORKER,{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({apiKey:apiKey,model:'claude-sonnet-4-20250514',max_tokens:60,
+              system:'You are a JSON-only API.',
+              messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:'image/jpeg',data:cropB64}},{type:'text',text:retryPrompt}]},{role:'assistant',content:'{'}]})});
+          var t2=await res2.text(); var d2=JSON.parse(t2);
+          var r2=''; for(var jj=0;jj<(d2.content||[]).length;jj++){if(d2.content[jj].type==='text'){r2=d2.content[jj].text;break;}}
+          r2=r2.replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
+          if(!r2.startsWith('{')) r2='{'+r2;
+          var p2=JSON.parse(r2);
+          if(p2.card_number && p2.card_number!==cardNum){
+            log('Retry corrected: '+cardNum+' → '+p2.card_number,'ok');
+            cardNum=p2.card_number;
+          }
+        } catch(e2){ log('Retry failed: '+e2.message,'e'); }
+      }
+      log('Card '+(i+1)+' ('+nameArr[i].name+'): '+cardNum,'ok');
+      results.push(cardNum);
     } catch(e) {
       log('Card '+(i+1)+' scan failed: '+e.message,'e');
       results.push('');
