@@ -472,49 +472,22 @@ function readBlob(blob,mime,name){
     var img=new Image();
     img.onload=function(){
       var iw=img.naturalWidth, ih=img.naturalHeight;
-      // Split image into rows, extract top+bottom strip from each row
-      // Supports 1-row or 2-row (2x2 grid) layouts
-      var maxW=900, scale=Math.min(1,maxW/iw);
-      var dw=Math.round(iw*scale);
-      // Detect rows: if image is roughly square or wider than tall = 1 row, else 2 rows
-      var numRows = (ih > iw * 1.3) ? 2 : 1;
-      // Add 5% overlap so row boundaries don't clip cards
-      var overlap = Math.round(ih * 0.05);
-      var rowH = Math.round(ih / numRows);
-      var topPct = 0.18;
-      var botPct = 0.30;  // 30% to be safe on bottom strip
-      var topH = Math.round(rowH * topPct);
-      var botH = Math.round(rowH * botPct);
-      var dTop = Math.round(topH * scale);
-      var dBot = Math.round(botH * scale);
+      // Send full image for best card number detection
+      var maxW=1400, scale=Math.min(1,maxW/iw);
+      var dw=Math.round(iw*scale), dh=Math.round(ih*scale);
       var c=document.createElement('canvas');
-      c.width=dw; c.height=(dTop+dBot)*numRows;
-      var ctx=c.getContext('2d');
-      for(var row=0; row<numRows; row++){
-        // Start each row slightly earlier to account for alignment variation
-        var rowY = Math.max(0, row * rowH - (row > 0 ? overlap : 0));
-        var destY = row * (dTop + dBot);
-        // Top strip of this row (name)
-        ctx.drawImage(img, 0, rowY, iw, topH, 0, destY, dw, dTop);
-        // Bottom strip - anchor to actual bottom of row, not top
-        var botY = Math.min(ih - botH, (row + 1) * rowH - botH);
-        ctx.drawImage(img, 0, botY, iw, botH, 0, destY + dTop, dw, dBot);
-      }
-      var cropped=c.toDataURL('image/jpeg',0.82);
-      var b64candidate=cropped.substring(cropped.indexOf(',')+1);
-      // Safety: if still over 3MB base64, re-encode at lower quality
-      if(b64candidate.length > 3000000){
-        var c2=document.createElement('canvas'); c2.width=c.width; c2.height=c.height;
-        c2.getContext('2d').drawImage(c,0,0);
-        var cropped2=c2.toDataURL('image/jpeg',0.65);
-        b64candidate=cropped2.substring(cropped2.indexOf(',')+1);
-        log('Re-encoded at lower quality: '+b64candidate.length+'chars','w');
+      c.width=dw; c.height=dh;
+      c.getContext('2d').drawImage(img,0,0,dw,dh);
+      var b64candidate=c.toDataURL('image/jpeg',0.82).split(',')[1];
+      if(b64candidate.length > 3500000){
+        b64candidate=c.toDataURL('image/jpeg',0.60).split(',')[1];
+        log('Re-encoded smaller: '+b64candidate.length+'chars','w');
       }
       currentB64=b64candidate; currentMime='image/jpeg'; foundCards=[];
       previewImg.src=url; imgNameEl.textContent=name;
       dropZone.style.display='none'; previewArea.style.display='block';
       btnScan.style.display='block'; showResultsPlaceholder();
-      log('Upload strips: '+numRows+' row(s) '+dw+'px wide b64='+currentB64.length+'chars','ok');
+      log('Full image: '+dw+'x'+dh+' b64='+currentB64.length+'chars','ok');
     };
     img.src=url;
   };
@@ -555,24 +528,8 @@ function setCardCount(btn, mode){
 }
 
 // ── Core API (via Cloudflare Worker) ──────────────────────────
-var PROMPT = 'This image shows two cropped strips from one or more vertical Pokemon cards laid flat.\n' +
-  'TOP STRIP = just the name bar at the very top of each card.\n' +
-  'BOTTOM STRIP = just the very bottom edge of each card where the card number is printed.\n\n' +
-  'CRITICAL RULES:\n' +
-  '- card_number is ONLY the collector number printed at the bottom-left or bottom-right of the card. It looks like 44/68 or 029/104 or RC31/RC32 or 101/198. CHECK BOTH BOTTOM CORNERS for every card - different cards put the number on different sides.\n' +
-  '- NEVER extract or return any HP value. HP and the number after it (e.g. HP 300, HP 220, 300 HP) must be completely ignored and never used anywhere in your response.\n' +
-  '- A valid card_number always contains a slash like 022/108 or 044/068 or a set prefix like RC31/RC32. It is always the LAST number printed at the very bottom edge of the card, after the illustrator credit and copyright line. If you cannot find one, return empty string.\n' +
-  '- NEVER use retreat cost numbers, weakness numbers, resistance numbers, or attack damage numbers as the card number.\n' +
-  '- NEVER use attack damage numbers as the card number.\n' +
-  '- The card number is always in the BOTTOM strip, never the top strip.\n' +
-  '- Cards are vertical (portrait orientation). The image may show strips from 1 or 2 ROWS of cards. For 2 rows, the image is divided into: [Row1-TopStrip][Row1-BottomStrip][Row2-TopStrip][Row2-BottomStrip]. Find ALL cards in ALL rows.\n\n' +
-  'For EVERY card visible extract:\n' +
-  '- name: Full Pokemon name including suffix (EX, GX, V, VMAX, VSTAR, MEGA, TAG TEAM, etc)\n' +
-  '- card_number: Collector number from bottom strip only (format: NNN/NNN or similar)\n' +
-  '- set_name: Set name if visible\n\n' +
-  'Return ONLY valid JSON array:\n' +
-  '[{"name":"...","card_number":"...","set_name":"..."}]\n' +
-  'If no cards visible return []. Raw JSON only, no markdown.';
+
+var PROMPT = 'This image contains one or more Pokemon cards laid flat.\n\nFor EVERY card in the image extract:\n- name: Full Pokemon name including any suffix (EX, GX, V, VMAX, VSTAR, MEGA, TAG TEAM, etc)\n- card_number: The collector number in SMALL TEXT at the bottom-left OR bottom-right corner. Always has a slash like 44/68 or 022/108 or RC31/RC32. Check BOTH corners carefully.\n- set_name: The set name on the card\n\nCRITICAL card_number rules:\n- MUST contain a slash or set prefix\n- Always tiny text at very bottom edge\n- NEVER use HP values (300 HP, 220 HP etc) - ignore any number near HP\n- NEVER use attack damage, weakness, resistance numbers\n- Return empty string if cannot find it\n\nCards may be in a row or 2x2 grid - find ALL of them.\n\nReturn ONLY a JSON array, no markdown:\n[{"name":"...","card_number":"...","set_name":"..."}]';
 
 async function runScan(apiKey,b64,mime,cardCount){
   log('API call '+b64.length+'chars mime='+mime);
@@ -626,7 +583,7 @@ function showResultsCards(arr){
   resultsArea.innerHTML=html;
   document.getElementById('btn-save-all').onclick=saveAll;
 }
-function updateFound(el){var idx=parseInt(el.dataset.idx);if(foundCards[idx]){foundCards[idx][el.dataset.key]=el.value;if(el.dataset.key==='card_number')foundCards[idx]._manualEdit=true;}}
+function updateFound(el){var idx=parseInt(el.dataset.idx);if(foundCards[idx]){foundCards[idx][el.dataset.key]=el.value;if(el.dataset.key==='card_number'||el.dataset.key==='set_name')foundCards[idx]._manualEdit=true;}}
 function saveOne(idx){
   var c=foundCards[idx]; if(!c)return;
   var e={name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:parseInt(c.qty)||1,_id:Date.now()};
@@ -640,7 +597,10 @@ function saveOne(idx){
   if(b){b.textContent='✓ Saved';b.className='btn-save-one saved';b.disabled=true;}
 }
 function saveAll(){
-  foundCards.forEach(function(c,i){cards.push({name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:parseInt(c.qty)||1,_id:Date.now()+i});});
+  foundCards.forEach(function(c,i){
+    cards.push({name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:parseInt(c.qty)||1,_id:Date.now()+i});
+    if(c._manualEdit && c.name && c.card_number) saveCorrection(c.name, c.card_number, c.set_name);
+  });
   saveCards();renderTable();toast('All '+foundCards.length+' cards saved!','success');
   document.querySelectorAll('.btn-save-one').forEach(function(b){b.textContent='✓ Saved';b.className='btn-save-one saved';b.disabled=true;});
 }
