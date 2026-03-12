@@ -479,19 +479,22 @@ function readBlob(blob,mime,name){
       // Detect rows: if image is roughly square or wider than tall = 1 row, else 2 rows
       var numRows = (ih > iw * 1.3) ? 2 : 1;
       var rowH = Math.round(ih / numRows);
-      var stripPct = 0.22; // 22% of each row height
-      var stripH = Math.round(rowH * stripPct);
-      var dStrip = Math.round(stripH * scale);
+      var topPct = 0.18;  // 18% for name
+      var botPct = 0.28;  // 28% for card number - larger to ensure we catch it
+      var topH = Math.round(rowH * topPct);
+      var botH = Math.round(rowH * botPct);
+      var dTop = Math.round(topH * scale);
+      var dBot = Math.round(botH * scale);
       var c=document.createElement('canvas');
-      c.width=dw; c.height=dStrip*2*numRows;
+      c.width=dw; c.height=(dTop+dBot)*numRows;
       var ctx=c.getContext('2d');
       for(var row=0; row<numRows; row++){
         var rowY = row * rowH;
-        var destY = row * dStrip * 2;
-        // Top strip of this row
-        ctx.drawImage(img, 0, rowY, iw, stripH, 0, destY, dw, dStrip);
-        // Bottom strip of this row
-        ctx.drawImage(img, 0, rowY + rowH - stripH, iw, stripH, 0, destY + dStrip, dw, dStrip);
+        var destY = row * (dTop + dBot);
+        // Top strip of this row (name)
+        ctx.drawImage(img, 0, rowY, iw, topH, 0, destY, dw, dTop);
+        // Bottom strip of this row (card number) - take more to be safe
+        ctx.drawImage(img, 0, rowY + rowH - botH, iw, botH, 0, destY + dTop, dw, dBot);
       }
       var cropped=c.toDataURL('image/jpeg',0.92);
       currentB64=cropped.substring(cropped.indexOf(',')+1); currentMime='image/jpeg'; foundCards=[];
