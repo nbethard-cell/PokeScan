@@ -489,10 +489,10 @@ function readBlob(blob,mime,name){
       // For 2x2 grid: bottom 50% of image contains row 2, take bottom 25% of each row
       var numRows = (dh > dw * 1.2) ? 2 : 1;
       var rowH2 = Math.round(dh / numRows);
-      var botPct = 0.25;
+      var botPct = 0.35; // increased for more context around card number
       var botH2 = Math.round(rowH2 * botPct);
-      // Scale up bottom strip to 1600px wide for better OCR
-      var stripScale = Math.min(3, 1600 / dw);
+      // Scale up bottom strip to 2000px wide for better OCR
+      var stripScale = Math.min(4, 2000 / dw);
       var sdw = Math.round(dw * stripScale);
       var sdBot = Math.round(botH2 * stripScale);
       var sc = document.createElement('canvas');
@@ -540,6 +540,20 @@ btnScan.onclick=function(){
       return merged;
     });
   }).then(function(arr){
+    // Verification pass: flag any numbers that look like they have OCR errors
+    var suspicious = arr.filter(function(c,i){
+      if(!c.card_number) return false;
+      // Flag if contains letters mixed with numbers in unexpected positions
+      // e.g. T18 (should be 118), or numbers that don't match slash pattern well
+      return /[TILOSBZ]\d|\d[TILOSBZ]/i.test(c.card_number) && !/^(GG|RC|TG|SV|PR|SM|XY|BW|DP|EX|GX)/i.test(c.card_number);
+    });
+    if(suspicious.length > 0){
+      log('Verification pass for '+suspicious.length+' suspicious number(s): '+suspicious.map(function(c){return c.card_number;}).join(', '),'w');
+      btnScan.textContent='Verifying '+suspicious.length+' number(s)…';
+      return runVerifyPass(k, currentStripB64||currentB64, arr, suspicious).then(function(verified){ return verified; });
+    }
+    return arr;
+  }).then(function(arr){
     arr=applyCorrections(arr); foundCards=arr; showResultsCards(arr);
     toast(arr.length+' card'+(arr.length===1?'':'s')+' found!','success');
   }).catch(function(e){
@@ -563,7 +577,7 @@ function setCardCount(btn, mode){
 
 var PROMPT_NAMES = 'This image contains one or more Pokemon cards laid flat.\n\nFor EVERY card find:\n- name: Full Pokemon name including suffix (EX, GX, V, VMAX, VSTAR, MEGA, TAG TEAM, Trainer name etc)\n- set_name: Set name printed on the card\n\nCards may be in a row or 2x2 grid - find ALL of them.\n\nReturn ONLY a JSON array, no markdown:\n[{"name":"...","set_name":"..."}]';
 
-var PROMPT_NUMBERS = 'You are a JSON API. Respond with ONLY a JSON array, no explanation, no markdown, no text before or after.\n\nThis image shows the bottom portion of CARDCOUNT Pokemon card(s). Find the collector number in each card\'s bottom-left or bottom-right corner. It always has a slash like 044/068 or 8/82 or GG50/GG70. Ignore HP numbers, attack damage, weakness values.\n\nRespond with EXACTLY this format and nothing else:\n[{"card_number":"..."},{"card_number":"..."}]\n\nCARDCOUNT items, left-to-right top-to-bottom order. Empty string if unreadable. JSON ONLY.';
+var PROMPT_NUMBERS = 'You are a JSON API. Respond with ONLY a JSON array, no explanation, no markdown, no text before or after.\n\nThis image shows the bottom portion of CARDCOUNT Pokemon card(s). Find the collector number in each card\'s bottom-left or bottom-right corner.\n\nCollector number rules:\n- Always has a slash: like 044/068 or 8/82 or 118/094 or GG50/GG70 or RC31/RC32\n- Tiny text near the very bottom edge, after illustrator credit\n- Check BOTH bottom-left AND bottom-right corners\n- Common misreads to avoid: T vs 1, I vs 1, O vs 0, S vs 5, B vs 8 - these are NUMBERS not letters\n- Ignore HP values, attack damage, weakness/resistance\n\nRespond with EXACTLY CARDCOUNT items in left-to-right, top-to-bottom order:\n[{"card_number":"..."},{"card_number":"..."}]\n\nEmpty string if truly unreadable. JSON ONLY.';
 
 var PROMPT = PROMPT_NAMES;
 
@@ -605,6 +619,47 @@ async function runNumberScan(apiKey, stripB64, nameArr, cardCount){
     };
   });
   log('Numbers merged: '+merged.map(function(c){return c.card_number||'?';}).join(', '),'ok');
+  return merged;
+}
+
+async function runVerifyPass(apiKey, stripB64, allCards, suspiciousCards){
+  // Build a targeted prompt listing the suspicious numbers
+  var suspList = suspiciousCards.map(function(c){ return '"'+c.name+'" reads as "'+c.card_number+'"'; }).join(', ');
+  var verifyPrompt = 'You are a JSON API. Respond with ONLY a JSON array.\n\nThis image shows the bottom of Pokemon cards. I need you to carefully re-read these specific collector numbers which may have OCR errors:\n'+suspList+'\n\nCommon errors: T misread as 1, I as 1, O as 0, S as 5, B as 8. Collector numbers are purely numeric with a slash (like 118/094, 8/82) EXCEPT for special prefixes like GG, RC, TG.\n\nFor each suspicious card, return the corrected number. Return ALL '+allCards.length+' cards in original order:\n[{"name":"...","card_number":"..."}]\nJSON ONLY.';
+  var res = await fetch(WORKER,{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      apiKey:apiKey,
+      model:'claude-sonnet-4-20250514',
+      max_tokens:400,
+      system:'You are a JSON-only API. Output raw JSON arrays only.',
+      messages:[
+        {role:'user',content:[
+          {type:'image',source:{type:'base64',media_type:'image/jpeg',data:stripB64}},
+          {type:'text',text:verifyPrompt}
+        ]},
+        {role:'assistant',content:'['}
+      ]
+    })
+  });
+  var text = await res.text();
+  var data; try{data=JSON.parse(text);}catch(e){return allCards;}
+  if(!res.ok) return allCards;
+  var raw=''; for(var i=0;i<(data.content||[]).length;i++){if(data.content[i].type==='text'){raw=data.content[i].text;break;}}
+  raw=raw.replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
+  if(!raw.startsWith('[')) raw='['+raw;
+  var verified; try{verified=JSON.parse(raw);}catch(e){log('Verify parse fail','e');return allCards;}
+  // Merge verified numbers back - only update suspicious ones
+  var suspNames = suspiciousCards.map(function(c){return c.name;});
+  var merged = allCards.map(function(c){
+    if(suspNames.indexOf(c.name) === -1) return c;
+    var v = verified.find(function(x){return x.name===c.name;});
+    if(v && v.card_number && v.card_number !== c.card_number){
+      log('Verified fix: '+c.name+' '+c.card_number+' → '+v.card_number,'ok');
+      return Object.assign({},c,{card_number:v.card_number});
+    }
+    return c;
+  });
   return merged;
 }
 
