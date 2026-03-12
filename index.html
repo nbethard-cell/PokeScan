@@ -478,9 +478,11 @@ function readBlob(blob,mime,name){
       var dw=Math.round(iw*scale);
       // Detect rows: if image is roughly square or wider than tall = 1 row, else 2 rows
       var numRows = (ih > iw * 1.3) ? 2 : 1;
+      // Add 5% overlap so row boundaries don't clip cards
+      var overlap = Math.round(ih * 0.05);
       var rowH = Math.round(ih / numRows);
-      var topPct = 0.18;  // 18% for name
-      var botPct = 0.28;  // 28% for card number - larger to ensure we catch it
+      var topPct = 0.18;
+      var botPct = 0.30;  // 30% to be safe on bottom strip
       var topH = Math.round(rowH * topPct);
       var botH = Math.round(rowH * botPct);
       var dTop = Math.round(topH * scale);
@@ -489,12 +491,14 @@ function readBlob(blob,mime,name){
       c.width=dw; c.height=(dTop+dBot)*numRows;
       var ctx=c.getContext('2d');
       for(var row=0; row<numRows; row++){
-        var rowY = row * rowH;
+        // Start each row slightly earlier to account for alignment variation
+        var rowY = Math.max(0, row * rowH - (row > 0 ? overlap : 0));
         var destY = row * (dTop + dBot);
         // Top strip of this row (name)
         ctx.drawImage(img, 0, rowY, iw, topH, 0, destY, dw, dTop);
-        // Bottom strip of this row (card number) - take more to be safe
-        ctx.drawImage(img, 0, rowY + rowH - botH, iw, botH, 0, destY + dTop, dw, dBot);
+        // Bottom strip - anchor to actual bottom of row, not top
+        var botY = Math.min(ih - botH, (row + 1) * rowH - botH);
+        ctx.drawImage(img, 0, botY, iw, botH, 0, destY + dTop, dw, dBot);
       }
       var cropped=c.toDataURL('image/jpeg',0.92);
       currentB64=cropped.substring(cropped.indexOf(',')+1); currentMime='image/jpeg'; foundCards=[];
@@ -546,7 +550,7 @@ var PROMPT = 'This image shows two cropped strips from one or more vertical Poke
   'TOP STRIP = just the name bar at the very top of each card.\n' +
   'BOTTOM STRIP = just the very bottom edge of each card where the card number is printed.\n\n' +
   'CRITICAL RULES:\n' +
-  '- card_number is ONLY the collector number printed at the bottom-left or bottom-right of the card. It looks like 44/68 or 029/104 or RC31/RC32 or 101/198.\n' +
+  '- card_number is ONLY the collector number printed at the bottom-left or bottom-right of the card. It looks like 44/68 or 029/104 or RC31/RC32 or 101/198. CHECK BOTH BOTTOM CORNERS for every card - different cards put the number on different sides.\n' +
   '- NEVER extract or return any HP value. HP and the number after it (e.g. HP 300, HP 220, 300 HP) must be completely ignored and never used anywhere in your response.\n' +
   '- A valid card_number always contains a slash like 022/108 or 044/068 or a set prefix like RC31/RC32. It is always the LAST number printed at the very bottom edge of the card, after the illustrator credit and copyright line. If you cannot find one, return empty string.\n' +
   '- NEVER use retreat cost numbers, weakness numbers, resistance numbers, or attack damage numbers as the card number.\n' +
