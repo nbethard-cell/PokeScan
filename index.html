@@ -407,10 +407,26 @@ function readBlob(blob,mime,name){
   r.onerror=function(){log('FileReader error','e');toast('Could not read file','error');};
   r.onload=function(ev){
     var url=ev.target.result; if(!url){log('Empty','e');return;}
-    currentB64=url.substring(url.indexOf(',')+1); currentMime=mime; foundCards=[];
-    previewImg.src=url; imgNameEl.textContent=name;
-    dropZone.style.display='none'; previewArea.style.display='block';
-    btnScan.style.display='block'; showResultsPlaceholder(); log('Preview ready','ok');
+    // Crop top+bottom strips from uploaded image too
+    var img=new Image();
+    img.onload=function(){
+      var iw=img.naturalWidth, ih=img.naturalHeight;
+      var stripH=Math.round(ih*0.27);
+      var maxW=1200, scale=Math.min(1,maxW/iw);
+      var dw=Math.round(iw*scale), dStrip=Math.round(stripH*scale);
+      var c=document.createElement('canvas');
+      c.width=dw; c.height=dStrip*2;
+      var ctx=c.getContext('2d');
+      ctx.drawImage(img,0,0,iw,stripH,0,0,dw,dStrip);
+      ctx.drawImage(img,0,ih-stripH,iw,stripH,0,dStrip,dw,dStrip);
+      var cropped=c.toDataURL('image/jpeg',0.92);
+      currentB64=cropped.substring(cropped.indexOf(',')+1); currentMime='image/jpeg'; foundCards=[];
+      previewImg.src=url; imgNameEl.textContent=name;
+      dropZone.style.display='none'; previewArea.style.display='block';
+      btnScan.style.display='block'; showResultsPlaceholder();
+      log('Upload strips: '+dw+'x'+(dStrip*2)+' b64='+currentB64.length+'chars','ok');
+    };
+    img.src=url;
   };
   r.readAsDataURL(blob);
 }
@@ -437,11 +453,14 @@ btnScan.onclick=function(){
 };
 
 // ── Core API (via Cloudflare Worker) ──────────────────────────
-var PROMPT = 'This image may contain one or more Pokemon trading cards.\n\n' +
+var PROMPT = 'This image shows TWO horizontal strips cropped from Pokemon card(s):\n' +
+  '- TOP STRIP: the top portion of the card(s) containing the Pokemon name and HP\n' +
+  '- BOTTOM STRIP: the bottom portion of the card(s) containing the card number and set symbol\n\n' +
+  'The middle artwork has been removed to save space.\n\n' +
   'For EVERY card visible, extract:\n' +
-  '- name: Full Pokemon name including any suffix (EX, GX, V, VMAX, VSTAR, etc)\n' +
-  '- card_number: The card number printed at the BOTTOM LEFT or BOTTOM RIGHT corner only (e.g. 025/102). Ignore any numbers elsewhere on the card.\n' +
-  '- set_name: The set name\n\n' +
+  '- name: Full Pokemon name from the TOP strip, including any suffix (EX, GX, V, VMAX, VSTAR, etc)\n' +
+  '- card_number: The card number from the BOTTOM strip only. It appears in the bottom-left or bottom-right corner in format like 025/102 or SV04 or 001/198. Ignore any numbers in the top strip.\n' +
+  '- set_name: The set name or set symbol from the BOTTOM strip\n\n' +
   'Return ONLY a valid JSON array:\n' +
   '[{"name":"...","card_number":"...","set_name":"..."}]\n\n' +
   'If no cards are visible return []. Raw JSON only, no markdown, no explanation.';
@@ -590,14 +609,23 @@ function triggerLiveScan(){
   var vw=camVideo.videoWidth, vh=camVideo.videoHeight;
   if(!vw||!vh){log('Video not ready','w');return;}
 
-  // Scale down to max 1024px
-  var maxDim=1024, scale=Math.min(1,maxDim/Math.max(vw,vh));
-  var sw=Math.round(vw*scale), sh=Math.round(vh*scale);
-  snapCanvas.width=sw; snapCanvas.height=sh;
-  snapCanvas.getContext('2d').drawImage(camVideo,0,0,sw,sh);
-  var dataUrl=snapCanvas.toDataURL('image/jpeg',0.80);
-  var b64=dataUrl.substring(dataUrl.indexOf(',')+1);
-  log('Frame scaled to '+sw+'x'+sh+' b64='+b64.length+'chars');
+  // Crop top 25% and bottom 25% of the frame, stitch vertically
+  // This keeps the card name (top) and card number (bottom) while skipping artwork
+  var stripH = Math.round(vh * 0.27);
+  var maxW = 1200;
+  var scale = Math.min(1, maxW / vw);
+  var dw = Math.round(vw * scale);
+  var dStrip = Math.round(stripH * scale);
+  snapCanvas.width = dw;
+  snapCanvas.height = dStrip * 2;
+  var ctx = snapCanvas.getContext('2d');
+  // Top strip
+  ctx.drawImage(camVideo, 0, 0, vw, stripH, 0, 0, dw, dStrip);
+  // Bottom strip
+  ctx.drawImage(camVideo, 0, vh - stripH, vw, stripH, 0, dStrip, dw, dStrip);
+  var dataUrl = snapCanvas.toDataURL('image/jpeg', 0.90);
+  var b64 = dataUrl.substring(dataUrl.indexOf(',') + 1);
+  log('Strips: top+bottom '+dw+'x'+(dStrip*2)+' b64='+b64.length+'chars');
 
   liveScanning=true;
   btnCapture.disabled=true;
