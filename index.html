@@ -261,10 +261,10 @@
         <button class="count-btn" data-count="9" onclick="setCardCount(this,'upload')">9</button>
       </div>
       <div id="drop-zone">
-        <input type="file" id="file-input" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif" />
+        <input type="file" id="file-input" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif" multiple />
         <div class="dz-icon">📷</div>
         <div class="dz-lbl">Drop a photo of your cards here</div>
-        <div class="dz-sub">One image · multiple cards supported · HEIC from iPhone OK</div>
+        <div class="dz-sub">Select multiple images · 4 cards per image · HEIC OK</div>
         <div class="dz-fmts"><span class="fmt">JPG</span><span class="fmt">PNG</span><span class="fmt">WEBP</span><span class="fmt">HEIC</span></div>
       </div>
       <div id="preview-area">
@@ -469,9 +469,141 @@ function switchTab(t){
 // ── Upload ────────────────────────────────────────────────────
 dropZone.addEventListener('dragover',function(e){e.preventDefault();dropZone.classList.add('over');});
 dropZone.addEventListener('dragleave',function(){dropZone.classList.remove('over');});
-dropZone.addEventListener('drop',function(e){e.preventDefault();dropZone.classList.remove('over');var f=e.dataTransfer.files[0];if(f)loadFile(f);});
-fileInput.addEventListener('change',function(){if(fileInput.files[0])loadFile(fileInput.files[0]);fileInput.value='';});
+dropZone.addEventListener('drop',function(e){
+  e.preventDefault();dropZone.classList.remove('over');
+  var files=Array.from(e.dataTransfer.files).filter(function(f){return f.type.startsWith('image/')||/\.(heic|heif|jpg|jpeg|png|webp)$/i.test(f.name);});
+  if(files.length) queueFiles(files);
+});
+fileInput.addEventListener('change',function(){
+  if(fileInput.files.length) queueFiles(Array.from(fileInput.files));
+  fileInput.value='';
+});
 document.getElementById('btn-change').onclick=resetUpload;
+
+// ── Multi-image queue ─────────────────────────────────────────
+var imageQueue = [], queueRunning = false;
+
+function queueFiles(files){
+  if(files.length === 1){ loadFile(files[0]); return; }
+  // Multi-image mode
+  imageQueue = files.slice();
+  log('Queued '+imageQueue.length+' images for batch scan','ok');
+  toast(imageQueue.length+' images queued — scanning…','success');
+  dropZone.style.display='none';
+  showQueueProgress(0, imageQueue.length);
+  processQueue();
+}
+
+function showQueueProgress(done, total){
+  var area = document.getElementById('results-area');
+  area.innerHTML = '<div style="padding:20px;text-align:center;">' +
+    '<div style="font-size:1.1rem;font-weight:600;color:var(--text);margin-bottom:8px;">Scanning batch...</div>' +
+    '<div style="background:rgba(255,255,255,0.07);border-radius:8px;overflow:hidden;height:8px;margin-bottom:10px;">' +
+      '<div id="queue-bar" style="height:100%;background:var(--accent);border-radius:8px;transition:width 0.3s;width:'+(total?Math.round(done/total*100):0)+'%"></div>' +
+    '</div>' +
+    '<div style="font-size:0.8rem;color:var(--muted);" id="queue-lbl">Image '+done+' of '+total+'</div>' +
+  '</div>';
+}
+
+function updateQueueProgress(done, total){
+  var bar = document.getElementById('queue-bar');
+  var lbl = document.getElementById('queue-lbl');
+  if(bar) bar.style.width = Math.round(done/total*100)+'%';
+  if(lbl) lbl.textContent = 'Image '+done+' of '+total+' — '+done*4+' cards scanned';
+}
+
+function processQueue(){
+  if(!imageQueue.length){
+    queueRunning = false;
+    dropZone.style.display = '';
+    renderTable();
+    toast('Batch complete! '+(cards.length)+' total cards saved','success');
+    log('Batch scan complete','ok');
+    return;
+  }
+  queueRunning = true;
+  var total = imageQueue.length + (cards.length > 0 ? 0 : 0); // track original length
+  var file = imageQueue.shift();
+  var done = (total - imageQueue.length - 1);
+  log('Batch: processing '+file.name+' ('+(done+1)+' remaining)','ok');
+
+  // Process file and auto-scan without showing preview
+  var name = file.name||'image', ftype=(file.type||'').toLowerCase();
+  var isHeic=/\.(heic|heif)$/i.test(name)||ftype==='image/heic'||ftype==='image/heif';
+
+  var blobPromise;
+  if(isHeic){
+    blobPromise = createImageBitmap(file).then(function(bm){
+      var c=document.createElement('canvas');c.width=bm.width;c.height=bm.height;
+      c.getContext('2d').drawImage(bm,0,0);
+      return new Promise(function(res,rej){c.toBlob(function(b){b?res({blob:b,mime:'image/jpeg'}):rej('null');},'image/jpeg',0.9);});
+    });
+  } else {
+    blobPromise = Promise.resolve({blob:file, mime:ftype||'image/jpeg'});
+  }
+
+  blobPromise.then(function(obj){
+    return new Promise(function(resolve, reject){
+      var r = new FileReader();
+      r.onerror = function(){ reject(new Error('Read failed')); };
+      r.onload = function(ev){
+        var url = ev.target.result; if(!url){ reject(new Error('Empty')); return; }
+        var img = new Image();
+        img.onload = function(){
+          var iw=img.naturalWidth, ih=img.naturalHeight;
+          var maxW=1400, scale=Math.min(1,maxW/iw);
+          var dw=Math.round(iw*scale), dh=Math.round(ih*scale);
+          var c=document.createElement('canvas'); c.width=dw; c.height=dh;
+          c.getContext('2d').drawImage(img,0,0,dw,dh);
+          var b64=c.toDataURL('image/jpeg',0.82).split(',')[1];
+          if(b64.length>3500000) b64=c.toDataURL('image/jpeg',0.60).split(',')[1];
+
+          // Generate crops
+          var numRows=(dh>dw*1.2)?2:1;
+          var numCols=2;
+          var rowH=Math.round(dh/numRows), colW=Math.round(dw/numCols);
+          var botH=Math.round(rowH*0.30);
+          var cropScale=Math.min(5,900/colW);
+          var ccw=Math.round(colW*cropScale), cch=Math.round(botH*cropScale);
+          var crops=[];
+          for(var row=0;row<numRows;row++){
+            for(var col=0;col<numCols;col++){
+              var cc=document.createElement('canvas'); cc.width=ccw; cc.height=cch;
+              cc.getContext('2d').drawImage(c,col*colW,(row+1)*rowH-botH,colW,botH,0,0,ccw,cch);
+              crops.push(cc.toDataURL('image/jpeg',0.92).split(',')[1]);
+            }
+          }
+          resolve({b64:b64, crops:crops});
+        };
+        img.onerror = function(){ reject(new Error('Image load failed')); };
+        img.src = url;
+      };
+      r.readAsDataURL(obj.blob);
+    });
+  }).then(function(data){
+    var k = apiKeyEl.value.trim()||localStorage.getItem('pokescan_key')||'';
+    var namePromise = runScan(k, data.b64, 'image/jpeg', uploadCardCount);
+    var cropPromises = data.crops.map(function(crop,i){ return runSingleCropScan(k,crop,i); });
+    return Promise.all([namePromise].concat(cropPromises));
+  }).then(function(results){
+    var nameArr=results[0], numberArr=results.slice(1);
+    var merged=nameArr.map(function(c,i){
+      return {name:c.name||'',set_name:c.set_name||'',card_number:numberArr[i]||''};
+    });
+    merged=applyCorrections(merged);
+    autoSaveAll(merged);
+    log('Batch image done: '+merged.map(function(c){return c.name||'?';}).join(', '),'ok');
+  }).catch(function(e){
+    log('Batch image error: '+e.message,'e');
+    toast('Error on '+file.name+': '+e.message,'error');
+  }).finally(function(){
+    // Update progress and do next
+    var remaining = imageQueue.length;
+    var origTotal = remaining + (cards.length > 0 ? 1 : 1); // approximate
+    updateQueueProgress(origTotal - remaining, origTotal);
+    setTimeout(processQueue, 500); // small gap between images
+  });
+}
 
 function loadFile(file){
   var name=file.name||'image', ftype=(file.type||'').toLowerCase();
