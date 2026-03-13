@@ -481,51 +481,73 @@ fileInput.addEventListener('change',function(){
 document.getElementById('btn-change').onclick=resetUpload;
 
 // ── Multi-image queue ─────────────────────────────────────────
-var imageQueue = [], queueRunning = false;
+var imageQueue = [], queueRunning = false, queueTotal = 0, queueDone = 0, batchResults = [];
 
 function queueFiles(files){
+  // Single image — use normal flow
   if(files.length === 1){ loadFile(files[0]); return; }
-  // Multi-image mode
+  // Multi-image batch mode
   imageQueue = files.slice();
-  log('Queued '+imageQueue.length+' images for batch scan','ok');
-  toast(imageQueue.length+' images queued — scanning…','success');
+  queueTotal = files.length;
+  queueDone = 0;
+  batchResults = [];
+  log('Queued '+queueTotal+' images for batch scan','ok');
+  toast(queueTotal+' images queued — scanning…','success');
   dropZone.style.display='none';
-  showQueueProgress(0, imageQueue.length);
+  showQueueProgress();
   processQueue();
 }
 
-function showQueueProgress(done, total){
+function showQueueProgress(){
+  var pct = queueTotal ? Math.round(queueDone/queueTotal*100) : 0;
   var area = document.getElementById('results-area');
-  area.innerHTML = '<div style="padding:20px;text-align:center;">' +
-    '<div style="font-size:1.1rem;font-weight:600;color:var(--text);margin-bottom:8px;">Scanning batch...</div>' +
-    '<div style="background:rgba(255,255,255,0.07);border-radius:8px;overflow:hidden;height:8px;margin-bottom:10px;">' +
-      '<div id="queue-bar" style="height:100%;background:var(--accent);border-radius:8px;transition:width 0.3s;width:'+(total?Math.round(done/total*100):0)+'%"></div>' +
-    '</div>' +
-    '<div style="font-size:0.8rem;color:var(--muted);" id="queue-lbl">Image '+done+' of '+total+'</div>' +
-  '</div>';
+  area.innerHTML =
+    '<div style="padding:24px 16px;text-align:center;">' +
+      '<div style="font-size:1.1rem;font-weight:600;color:var(--text);margin-bottom:10px;">📦 Scanning batch…</div>' +
+      '<div style="background:rgba(255,255,255,0.07);border-radius:8px;overflow:hidden;height:10px;margin-bottom:10px;">' +
+        '<div id="queue-bar" style="height:100%;background:var(--accent);border-radius:8px;transition:width 0.4s;width:'+pct+'%"></div>' +
+      '</div>' +
+      '<div style="font-size:0.82rem;color:var(--muted);" id="queue-lbl">Image '+queueDone+' of '+queueTotal+' — '+(queueDone*4)+' cards scanned</div>' +
+      '<button onclick="cancelQueue()" style="margin-top:14px;padding:7px 18px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:none;color:var(--muted);cursor:pointer;font-size:0.78rem;">✕ Cancel</button>' +
+    '</div>';
 }
 
-function updateQueueProgress(done, total){
+function updateQueueProgress(){
+  var pct = queueTotal ? Math.round(queueDone/queueTotal*100) : 0;
   var bar = document.getElementById('queue-bar');
   var lbl = document.getElementById('queue-lbl');
-  if(bar) bar.style.width = Math.round(done/total*100)+'%';
-  if(lbl) lbl.textContent = 'Image '+done+' of '+total+' — '+done*4+' cards scanned';
+  if(bar) bar.style.width = pct+'%';
+  if(lbl) lbl.textContent = 'Image '+queueDone+' of '+queueTotal+' — '+(queueDone*4)+' cards scanned';
+}
+
+function cancelQueue(){
+  imageQueue = [];
+  queueRunning = false;
+  dropZone.style.display = '';
+  showResultsPlaceholder();
+  toast('Batch cancelled');
+  log('Batch cancelled by user');
 }
 
 function processQueue(){
   if(!imageQueue.length){
+    // Batch complete — show all results for correction
     queueRunning = false;
     dropZone.style.display = '';
+    if(batchResults.length){
+      foundCards = batchResults;
+      showResultsCards(batchResults);
+    } else {
+      showResultsPlaceholder();
+    }
     renderTable();
-    toast('Batch complete! '+(cards.length)+' total cards saved','success');
-    log('Batch scan complete','ok');
+    toast('✅ Batch done! '+queueDone+' images, '+(queueDone*4)+' cards scanned','success');
+    log('Batch complete: '+queueDone+' images','ok');
     return;
   }
   queueRunning = true;
-  var total = imageQueue.length + (cards.length > 0 ? 0 : 0); // track original length
   var file = imageQueue.shift();
-  var done = (total - imageQueue.length - 1);
-  log('Batch: processing '+file.name+' ('+(done+1)+' remaining)','ok');
+  log('Batch ['+(queueDone+1)+'/'+queueTotal+']: '+file.name,'ok');
 
   // Process file and auto-scan without showing preview
   var name = file.name||'image', ftype=(file.type||'').toLowerCase();
@@ -592,16 +614,15 @@ function processQueue(){
     });
     merged=applyCorrections(merged);
     autoSaveAll(merged);
+    batchResults = batchResults.concat(merged);
     log('Batch image done: '+merged.map(function(c){return c.name||'?';}).join(', '),'ok');
   }).catch(function(e){
     log('Batch image error: '+e.message,'e');
     toast('Error on '+file.name+': '+e.message,'error');
   }).finally(function(){
-    // Update progress and do next
-    var remaining = imageQueue.length;
-    var origTotal = remaining + (cards.length > 0 ? 1 : 1); // approximate
-    updateQueueProgress(origTotal - remaining, origTotal);
-    setTimeout(processQueue, 500); // small gap between images
+    queueDone++;
+    updateQueueProgress();
+    setTimeout(processQueue, 300);
   });
 }
 
