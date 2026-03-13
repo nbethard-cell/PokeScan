@@ -158,6 +158,7 @@
   .btn-save-one{padding:6px 12px;background:rgba(0,229,160,0.1);color:var(--success);border:1px solid rgba(0,229,160,0.2);border-radius:7px;font-size:0.72rem;cursor:pointer;font-family:inherit;transition:all 0.2s;white-space:nowrap;}
   .btn-save-one:hover{background:rgba(0,229,160,0.2);}
   .btn-save-one.saved{opacity:0.5;cursor:default;}
+  .btn-save-one.auto-saved{background:rgba(100,100,200,0.2);border:1px solid rgba(150,150,255,0.35);color:#aab;}
   .btn-del-one{padding:6px 8px;background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.82rem;border-radius:6px;transition:all 0.15s;}
   .btn-del-one:hover{color:var(--red);background:rgba(255,60,60,0.1);}
 
@@ -394,7 +395,7 @@ var corrections = {};
 try { corrections = JSON.parse(localStorage.getItem('pokescan_corrections')||'{}'); } catch(e){}
 // Merge in seed corrections for any keys not already customised by user
 (function(){
-  var seeds = [{name:"Dawn",card_number:"118/094",set_name:"Prismatic Evolutions"}, {name:"Landorus",card_number:"131/086",set_name:"Stellar Crown"}];
+  var seeds = [{name:"Dawn",card_number:"118/094",set_name:"Prismatic Evolutions"}, {name:"Landorus",card_number:"131/086",set_name:"Stellar Crown"}, {name:"Dark Gyarados",card_number:"8/82",set_name:"Team Rocket"}, {name:"Lapras",card_number:"8/92",set_name:"Legend Maker"}, {name:"Mew",card_number:"GG10/GG70",set_name:"Paldea Evolved"}];
   var changed = false;
   seeds.forEach(function(s){
     var k = s.name.toLowerCase().replace(/[^a-z0-9]/g,'_');
@@ -558,33 +559,31 @@ btnScan.onclick=function(){
   var k=apiKeyEl.value.trim()||localStorage.getItem('pokescan_key')||'';
   if(!k){toast('Enter your API key first','error');return;}
   if(!currentB64){toast('Upload an image first','error');return;}
-  btnScan.disabled=true; btnScan.textContent='Step 1/2: Finding cards…';
+  var t0=Date.now();
+  btnScan.disabled=true; btnScan.textContent='Scanning…';
   showResultsLoading();
-  // Call 1: full image to get names and set names
-  runScan(k,currentB64,currentMime,uploadCardCount).then(function(arr){
-    log('Pass 1 done: '+arr.length+' cards, now scanning card numbers…','ok');
-    btnScan.textContent='Step 2/2: Reading card numbers…';
-    // Call 2: high-res bottom strip to get card numbers
-    return runNumberScanPerCard(k, currentCardCrops, arr, uploadCardCount).then(function(merged){
-      return merged;
+  // Fire name scan + all card crop scans IN PARALLEL
+  var namePromise = runScan(k, currentB64, currentMime, uploadCardCount);
+  var cropCount = uploadCardCount > 0 ? uploadCardCount : currentCardCrops.length;
+  var cropPromises = currentCardCrops.slice(0, cropCount).map(function(crop, i){
+    return runSingleCropScan(k, crop, i);
+  });
+  Promise.all([namePromise].concat(cropPromises)).then(function(results){
+    var nameArr = results[0];
+    var numberArr = results.slice(1);
+    log('Parallel done: '+nameArr.length+' names, '+numberArr.length+' numbers in '+((Date.now()-t0)/1000).toFixed(1)+'s','ok');
+    // Merge names + numbers by index
+    var merged = nameArr.map(function(c, i){
+      return { name:c.name||'', set_name:c.set_name||'', card_number: numberArr[i]||'' };
     });
+    return merged;
   }).then(function(arr){
-    // Verification pass: flag any numbers that look like they have OCR errors
-    var suspicious = arr.filter(function(c,i){
-      if(!c.card_number) return false;
-      // Flag if contains letters mixed with numbers in unexpected positions
-      // e.g. T18 (should be 118), or numbers that don't match slash pattern well
-      return /[TILOSBZ]\d|\d[TILOSBZ]/i.test(c.card_number) && !/^(GG|RC|TG|SV|PR|SM|XY|BW|DP|EX|GX)/i.test(c.card_number);
-    });
-    if(suspicious.length > 0){
-      log('Verification pass for '+suspicious.length+' suspicious number(s): '+suspicious.map(function(c){return c.card_number;}).join(', '),'w');
-      btnScan.textContent='Verifying '+suspicious.length+' number(s)…';
-      return runVerifyPass(k, currentStripB64||currentB64, arr, suspicious).then(function(verified){ return verified; });
-    }
-    return arr;
-  }).then(function(arr){
-    arr=applyCorrections(arr); foundCards=arr; showResultsCards(arr);
-    toast(arr.length+' card'+(arr.length===1?'':'s')+' found!','success');
+    arr=applyCorrections(arr); foundCards=arr;
+    // Auto-save all then show results for corrections
+    autoSaveAll(arr);
+    showResultsCards(arr);
+    var elapsed = ((Date.now()-t0)/1000).toFixed(1);
+    toast(arr.length+' card'+(arr.length===1?'':'s')+' saved! ('+elapsed+'s)','success');
   }).catch(function(e){
     log('Scan error: '+e.message,'e'); toast('Error: '+e.message,'error'); showResultsPlaceholder();
   }).finally(function(){btnScan.disabled=false;btnScan.textContent='⚡ Scan All Cards in Image';});
@@ -609,6 +608,53 @@ var PROMPT_NAMES = 'This image contains one or more Pokemon cards laid flat.\n\n
 var PROMPT_NUMBERS = 'You are a JSON API. Respond with ONLY a JSON array, no explanation, no markdown, no text before or after.\n\nThis image shows the bottom portion of CARDCOUNT Pokemon card(s). Find the collector number in each card\'s bottom-left or bottom-right corner.\n\nCollector number rules:\n- Always has a slash: like 044/068 or 8/82 or 118/094 or GG50/GG70 or RC31/RC32\n- Tiny text near the very bottom edge, after illustrator credit\n- Check BOTH bottom-left AND bottom-right corners\n- Common misreads to avoid: T vs 1, I vs 1, O vs 0, S vs 5, B vs 8 - these are NUMBERS not letters\n- Ignore HP values, attack damage, weakness/resistance\n\nRespond with EXACTLY CARDCOUNT items in left-to-right, top-to-bottom order:\n[{"card_number":"..."},{"card_number":"..."}]\n\nEmpty string if truly unreadable. JSON ONLY.';
 
 var PROMPT = PROMPT_NAMES;
+
+async function runSingleCropScan(apiKey, cropB64, index){
+  // Single card crop scan - designed to run in parallel
+  var SINGLE_PROMPT = 'You are a JSON API. Respond with ONLY a JSON object, no text.\n\nThis image shows the BOTTOM portion of ONE Pokemon card. Find the collector number - tiny text in the bottom-left OR bottom-right corner, always containing a slash like 169/142 or 8/82 or GG50/GG70 or 118/094.\n\nCRITICAL - common OCR misreads on small card text:\n- 1 misread as 7, T, or I (look carefully at vertical strokes - 1 is very common)\n- 1 misread as 4 (look at shape - 4 has a crossing stroke, 1 does not)\n- 6 misread as G\n- 9 misread as q\n- 8 misread as B\nThese are ALL digits. If you see letters mixed with digits (except known prefixes GG/RC/TG/SV/PR), it is a digit being misread.\n\nDouble-check every digit, especially the first digit of 3-digit numbers.\n\nIgnore: HP values, attack damage, weakness/resistance numbers.\n\nReturn exactly: {"card_number":"..."} — empty string if not found. JSON ONLY.';
+  try {
+    var res = await fetch(WORKER,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        apiKey:apiKey, model:'claude-sonnet-4-20250514', max_tokens:60,
+        system:'You are a JSON-only API. Output raw JSON only.',
+        messages:[
+          {role:'user',content:[
+            {type:'image',source:{type:'base64',media_type:'image/jpeg',data:cropB64}},
+            {type:'text',text:SINGLE_PROMPT}
+          ]},
+          {role:'assistant',content:'{'}
+        ]
+      })
+    });
+    var data = JSON.parse(await res.text());
+    var raw=''; for(var j=0;j<(data.content||[]).length;j++){if(data.content[j].type==='text'){raw=data.content[j].text;break;}}
+    raw=raw.replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
+    if(!raw.startsWith('{')) raw='{'+raw;
+    var parsed=JSON.parse(raw);
+    var cardNum = parsed.card_number||'';
+    // Quick retry for likely 1→7 or 1→4 misreads (3-digit starting with 7 or 4)
+    var m = cardNum.match(/^([\dTI]+)\//);
+    if(m && m[1].length===3 && /^[47TI]/.test(m[1])){
+      log('Crop '+index+' possible misread ('+cardNum+'), retrying…','w');
+      var retryPrompt='You are a JSON API. ONE Pokemon card bottom shown.\n\nI read the collector number as "'+cardNum+'" but the first digit may be 1 misread as '+m[1][0]+'. In tiny print, 1 looks very similar to 4 and 7.\n\nPlease look very carefully at the first digit — is it 1 or '+m[1][0]+'?\n\nReturn: {"card_number":"..."} JSON ONLY.';
+      var res2=await fetch(WORKER,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({apiKey:apiKey,model:'claude-sonnet-4-20250514',max_tokens:60,
+          system:'You are a JSON-only API.',
+          messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:'image/jpeg',data:cropB64}},{type:'text',text:retryPrompt}]},{role:'assistant',content:'{'}]})});
+      var d2=JSON.parse(await res2.text());
+      var r2=''; for(var jj=0;jj<(d2.content||[]).length;jj++){if(d2.content[jj].type==='text'){r2=d2.content[jj].text;break;}}
+      r2=r2.replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
+      if(!r2.startsWith('{')) r2='{'+r2;
+      try{ var p2=JSON.parse(r2); if(p2.card_number&&p2.card_number!==cardNum){log('Crop '+index+' retry: '+cardNum+'→'+p2.card_number,'ok');cardNum=p2.card_number;} }catch(e2){}
+    }
+    log('Crop '+index+': '+cardNum,'ok');
+    return cardNum;
+  } catch(e){
+    log('Crop '+index+' failed: '+e.message,'e');
+    return '';
+  }
+}
 
 async function runNumberScanPerCard(apiKey, crops, nameArr, cardCount){
   // Send each card's bottom crop individually for maximum accuracy
@@ -806,14 +852,14 @@ function showResultsLoading(){
 }
 function showResultsCards(arr){
   if(!arr.length){resultsArea.innerHTML='<div class="results-placeholder"><span class="big">🤔</span>No cards detected<br>Try a clearer photo</div>';return;}
-  var html='<div class="found-header"><div class="found-count"><span>'+arr.length+'</span> card'+(arr.length===1?'':'s')+' found</div><button id="btn-save-all">＋ Save All</button></div><div class="cards-grid">';
+  var html='<div class="found-header"><div class="found-count"><span>'+arr.length+'</span> card'+(arr.length===1?'':'s')+' found &amp; saved</div><button id="btn-save-all" style="font-size:0.75rem;opacity:0.7">↺ Re-save All</button></div><div class="cards-grid">';
   arr.forEach(function(c,i){
     html+='<div class="card-result" id="cr-'+i+'">'+
       '<div><div class="cr-label">Full Name</div><input class="cr-input" data-idx="'+i+'" data-key="name" value="'+esc(c.name||'')+'" oninput="updateFound(this)"/></div>'+
-      '<div><div class="cr-label">Card Number</div><input class="cr-input'+(c._corrected?' corrected':'')+'" data-idx="'+i+'" data-key="card_number" value="'+esc(c.card_number||'')+'" oninput="updateFound(this)"/>'+(c._corrected?'<div class="corrected-badge">✦ from memory</div>':''  )+'</div>'+
+      '<div><div class="cr-label">Card Number</div><input class="cr-input'+(c._corrected?' corrected':'')+'" data-idx="'+i+'" data-key="card_number" value="'+esc(c.card_number||'')+'" oninput="updateFound(this)"/>'+(c._corrected?'<div class="corrected-badge">✦ from memory</div>':'')+'</div>'+
       '<div><div class="cr-label">Set</div><input class="cr-input" data-idx="'+i+'" data-key="set_name" value="'+esc(c.set_name||'')+'" oninput="updateFound(this)"/></div>'+
       '<div class="cr-actions"><div class="cr-num">'+(i+1)+'</div>'+
-        '<button class="btn-save-one" onclick="saveOne('+i+')">Save</button>'+
+        '<button class="btn-save-one auto-saved" onclick="fixCard('+i+')" title="Fix &amp; re-save this card">✎ Fix</button>'+
         '<button class="btn-del-one" onclick="removeFound('+i+')">✕</button>'+
       '</div></div>';
   });
@@ -822,6 +868,37 @@ function showResultsCards(arr){
   document.getElementById('btn-save-all').onclick=saveAll;
 }
 function updateFound(el){var idx=parseInt(el.dataset.idx);if(foundCards[idx]){foundCards[idx][el.dataset.key]=el.value;if(el.dataset.key==='card_number'||el.dataset.key==='set_name')foundCards[idx]._manualEdit=true;}}
+function broadcastToExtension(name, cardNumber, format) {
+  // Format the text based on extension setting (default: name + number)
+  var text = name + ' ' + cardNumber;
+  // Write to localStorage — extension content script listens for this
+  try {
+    localStorage.setItem('pokescan_inject_queue', JSON.stringify({
+      text: text,
+      name: name,
+      card_number: cardNumber,
+      ts: Date.now()
+    }));
+    // Clear it immediately so next scan triggers storage event again
+    setTimeout(function(){ localStorage.removeItem('pokescan_inject_queue'); }, 500);
+    log('Broadcast to extension: ' + text, 'ok');
+  } catch(e) {
+    log('Extension broadcast failed: ' + e.message, 'w');
+  }
+}
+
+function autoSaveAll(arr){
+  // Auto-save without confirmation — user can still fix in results panel
+  var ts = Date.now();
+  arr.forEach(function(c,i){
+    cards.push({name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:parseInt(c.qty)||1,notes:c.notes||'',date_scanned:new Date().toLocaleDateString(),_id:ts+i});
+    // Broadcast each card to extension with slight delay so events fire in order
+    (function(card, delay){ setTimeout(function(){ broadcastToExtension(card.name||'', card.card_number||''); }, delay); })(c, i * 600);
+  });
+  saveCards(); renderTable();
+  log('Auto-saved '+arr.length+' cards','ok');
+}
+
 function saveOne(idx){
   var c=foundCards[idx]; if(!c)return;
   var e={name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:parseInt(c.qty)||1,notes:c.notes||'',date_scanned:new Date().toLocaleDateString(),_id:Date.now()};
@@ -841,6 +918,22 @@ function saveAll(){
   });
   saveCards();renderTable();toast('All '+foundCards.length+' cards saved!','success');
   document.querySelectorAll('.btn-save-one').forEach(function(b){b.textContent='✓ Saved';b.className='btn-save-one saved';b.disabled=true;});
+}
+function fixCard(idx){
+  // Re-save this card with current (edited) values and remember correction
+  var c=foundCards[idx]; if(!c)return;
+  // Find and update the existing saved entry by scanning back from end of cards array
+  var ts = Date.now();
+  var updated = {name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:parseInt(c.qty)||1,notes:c.notes||'',date_scanned:new Date().toLocaleDateString(),_id:ts};
+  // Replace last occurrence of same name in cards
+  var idx2 = -1;
+  for(var i=cards.length-1;i>=0;i--){ if(cards[i].name===c.name){ idx2=i; break; } }
+  if(idx2>=0){ cards[idx2]=updated; } else { cards.push(updated); }
+  saveCards(); renderTable();
+  if(c._manualEdit && c.name && c.card_number) saveCorrection(c.name, c.card_number, c.set_name);
+  var b=document.querySelector('#cr-'+idx+' .btn-save-one');
+  if(b){b.textContent='✓ Fixed';b.disabled=true;}
+  toast((c.name||'Card')+' updated!','success');
 }
 function removeFound(idx){foundCards.splice(idx,1);showResultsCards(foundCards);}
 
@@ -1116,7 +1209,7 @@ function saveCorrectionEdit(k){
 
 function getSeedCorrections(){
   // Known OCR misreads discovered during testing — seeded as defaults
-  var seeds = [{name:"Dawn",card_number:"118/094",set_name:"Prismatic Evolutions"}, {name:"Landorus",card_number:"131/086",set_name:"Stellar Crown"}];
+  var seeds = [{name:"Dawn",card_number:"118/094",set_name:"Prismatic Evolutions"}, {name:"Landorus",card_number:"131/086",set_name:"Stellar Crown"}, {name:"Dark Gyarados",card_number:"8/82",set_name:"Team Rocket"}, {name:"Lapras",card_number:"8/92",set_name:"Legend Maker"}, {name:"Mew",card_number:"GG10/GG70",set_name:"Paldea Evolved"}];
   var seeded = {};
   seeds.forEach(function(s){ seeded[corrKey(s.name)] = s; });
   return seeded;
