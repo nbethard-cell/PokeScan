@@ -128,6 +128,7 @@
   .lci-save{flex:1;padding:5px;background:rgba(0,229,160,0.1);color:var(--success);border:1px solid rgba(0,229,160,0.2);border-radius:6px;font-size:0.68rem;cursor:pointer;font-family:inherit;transition:all 0.2s;}
   .lci-save:hover{background:rgba(0,229,160,0.2);}
   .lci-save.saved{opacity:0.5;cursor:default;}
+  .lci-save.auto-saved{background:rgba(100,100,220,0.15);border-color:rgba(150,150,255,0.3);color:#aab;}
   .lci-dismiss{padding:5px 9px;background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.76rem;border-radius:6px;transition:all 0.15s;}
   .lci-dismiss:hover{color:var(--red);background:rgba(255,60,60,0.1);}
   .live-empty{text-align:center;color:var(--muted);font-size:0.73rem;padding:28px 10px;line-height:1.8;}
@@ -292,25 +293,16 @@
             </div>
           </div>
 
-          <!-- Card count hint for live -->
-          <div class="card-count-row" style="margin-top:4px;">
-            <span class="card-count-label">Cards in frame</span>
-            <button class="count-btn auto active" data-count="0" onclick="setCardCount(this,'camera')">Auto</button>
-            <button class="count-btn" data-count="1" onclick="setCardCount(this,'camera')">1</button>
-            <button class="count-btn" data-count="2" onclick="setCardCount(this,'camera')">2</button>
-            <button class="count-btn" data-count="3" onclick="setCardCount(this,'camera')">3</button>
-            <button class="count-btn" data-count="4" onclick="setCardCount(this,'camera')">4</button>
+          <!-- Freeze + Scan button -->
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <button id="btn-capture-now" onclick="freezeAndScan()" style="flex:1;font-size:1.1rem;padding:14px;">📸 Freeze &amp; Scan</button>
+            <button id="btn-live-stop" onclick="stopLive()" style="padding:14px 16px;background:rgba(255,255,255,0.07);border:1px solid var(--border);border-radius:10px;color:var(--muted);cursor:pointer;font-size:0.85rem;">■ Stop</button>
           </div>
-          <!-- Big scan button -->
-          <button id="btn-capture-now" onclick="manualScan()">📸 Scan Now</button>
-
-          <!-- Auto-scan controls -->
-          <div class="cam-controls-row">
-            <span class="interval-label">Auto every</span>
-            <button class="interval-btn" data-sec="0"  onclick="setIntervalSec(this)">Off</button>
-            <button class="interval-btn" data-sec="5"  onclick="setIntervalSec(this)">5s</button>
-            <button class="interval-btn active" data-sec="10" onclick="setIntervalSec(this)">10s</button>
-            <button id="btn-live-stop" onclick="stopLive()">■ Stop</button>
+          <!-- Frozen frame preview -->
+          <div id="freeze-preview-wrap" style="display:none;margin-top:8px;position:relative;">
+            <canvas id="freeze-canvas" style="width:100%;border-radius:10px;border:2px solid var(--accent);"></canvas>
+            <div style="position:absolute;top:6px;left:8px;background:rgba(0,0,0,0.7);color:#fff;font-size:0.7rem;padding:3px 8px;border-radius:20px;">📷 Frozen — scanning…</div>
+            <button onclick="unfreeze()" style="position:absolute;top:6px;right:8px;background:rgba(0,0,0,0.7);color:#fff;border:none;border-radius:20px;padding:3px 10px;font-size:0.7rem;cursor:pointer;">✕ Discard</button>
           </div>
         </div>
 
@@ -327,6 +319,21 @@
           </div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- iPhone relay panel -->
+  <div class="panel" id="iphone-panel">
+    <div class="phead" style="cursor:pointer;" onclick="toggleIphonePanel()">
+      <div class="dot dot-b" id="iphone-dot" style="background:#666;"></div>
+      <span class="ptitle">📱 iPhone Camera</span>
+      <span id="iphone-status-lbl" style="font-size:0.72rem;color:var(--muted);margin-left:8px;">Off</span>
+      <span style="margin-left:auto;font-size:0.75rem;color:var(--muted);" id="iphone-chevron">▼</span>
+    </div>
+    <div id="iphone-body" style="display:none;padding:14px 16px;border-top:1px solid var(--border);">
+      <p style="font-size:0.78rem;color:var(--muted);margin-bottom:12px;">Open <strong>pokescan-cam.html</strong> in Safari on your iPhone. When you shoot a photo it will appear here automatically.</p>
+      <button id="btn-iphone-toggle" onclick="toggleIphonePolling()" style="width:100%;padding:11px;border-radius:10px;border:none;background:#e86b2a;color:#fff;font-size:0.9rem;font-weight:600;cursor:pointer;">▶ Start Listening</button>
+      <div id="iphone-last" style="margin-top:10px;font-size:0.75rem;color:var(--muted);min-height:18px;"></div>
     </div>
   </div>
 
@@ -404,6 +411,7 @@ try { corrections = JSON.parse(localStorage.getItem('pokescan_corrections')||'{}
   if(changed) localStorage.setItem('pokescan_corrections', JSON.stringify(corrections));
 })();
 var currentB64 = null, currentStripB64 = null, currentCardCrops = [], currentMime = 'image/jpeg', foundCards = [];
+var iPhonePolling = false, iPhonePollTimer = null;
 var camStream = null, liveScanning = false, liveIntervalSec = 10;
 var liveCountTimer = null, liveCountdown = 0, liveCards = [];
 var snapCanvas = document.createElement('canvas');
@@ -1004,56 +1012,100 @@ function startCountdown(){
   },1000);
 }
 
-// Manual scan button
-function manualScan(){
+var frozenB64 = null;
+var freezeCanvas = null;
+
+function freezeAndScan(){
   if(liveScanning){toast('Already scanning…');return;}
-  triggerLiveScan();
+  if(!camStream){toast('Start camera first','error');return;}
+  var vw=camVideo.videoWidth, vh=camVideo.videoHeight;
+  if(!vw||!vh||vw<100){toast('Camera still starting…');return;}
+
+  // Capture full frame at high resolution
+  freezeCanvas = document.getElementById('freeze-canvas');
+  var maxW = 1400, scale = Math.min(1, maxW/vw);
+  var dw = Math.round(vw*scale), dh = Math.round(vh*scale);
+  freezeCanvas.width=dw; freezeCanvas.height=dh;
+  freezeCanvas.getContext('2d').drawImage(camVideo,0,0,dw,dh);
+
+  // Show frozen preview
+  document.getElementById('freeze-preview-wrap').style.display='block';
+  camVideo.style.display='none';
+
+  var dataUrl=freezeCanvas.toDataURL('image/jpeg',0.88);
+  frozenB64=dataUrl.split(',')[1];
+  if(frozenB64.length>3500000){
+    frozenB64=freezeCanvas.toDataURL('image/jpeg',0.65).split(',')[1];
+  }
+  log('Frozen frame: '+dw+'x'+dh+' b64='+frozenB64.length,'ok');
+  triggerLiveScan(frozenB64);
 }
 
-function triggerLiveScan(){
+function unfreeze(){
+  frozenB64=null;
+  document.getElementById('freeze-preview-wrap').style.display='none';
+  camVideo.style.display='block';
+  if(!liveScanning){
+    btnCapture.disabled=false;
+    btnCapture.textContent='📸 Freeze & Scan';
+  }
+}
+
+function triggerLiveScan(b64){
   if(liveScanning||!camStream) return;
   var k=apiKeyEl.value.trim()||localStorage.getItem('pokescan_key')||'';
   if(!k){setLiveStatus('err','No API key');return;}
-  var vw=camVideo.videoWidth, vh=camVideo.videoHeight;
-  if(!vw||!vh||vw<100){log('Video not ready yet','w');toast('Camera still starting…');return;}
-
-  // Top 20% = name bar only, Bottom 18% = card number area only
-  var topH   = Math.round(vh * 0.20);
-  var botH   = Math.round(vh * 0.18);
-  var maxW = 640;
-  var scale = Math.min(1, maxW / vw);
-  var dw     = Math.round(vw * scale);
-  var dTop   = Math.round(topH * scale);
-  var dBot   = Math.round(botH * scale);
-  snapCanvas.width  = dw;
-  snapCanvas.height = dTop + dBot;
-  var ctx = snapCanvas.getContext('2d');
-  ctx.drawImage(camVideo, 0, 0,        vw, topH, 0,    0, dw, dTop);
-  ctx.drawImage(camVideo, 0, vh - botH, vw, botH, 0, dTop, dw, dBot);
-  var dataUrl = snapCanvas.toDataURL('image/jpeg', 0.88);
-  var b64 = dataUrl.substring(dataUrl.indexOf(',') + 1);
-  log('Strips: top '+dTop+'px bot '+dBot+'px wide='+dw+' b64='+b64.length+'chars');
 
   liveScanning=true;
   btnCapture.disabled=true;
   btnCapture.textContent='⏳ Scanning…';
   setLiveStatus('scanning','Scanning…');
-  camCountdown.textContent='';
 
-  runScan(k,b64,'image/jpeg',cameraCardCount).then(function(arr){
-    arr=applyCorrections(arr);
-    setLiveStatus('ok', arr.length ? arr.length+' card'+(arr.length===1?'':'s')+' detected' : 'No cards — try again');
-    if(arr.length) mergeLiveResults(arr);
-    else toast('No cards detected — try again','');
+  // Two-pass: names + per-card crops in parallel (same as upload)
+  var cardCount = cameraCardCount||1;
+  // Generate card crops from frozen frame
+  var crops = [];
+  if(freezeCanvas){
+    var dw=freezeCanvas.width, dh=freezeCanvas.height;
+    var numRows=(dh>dw*1.2)?2:1;
+    var numCols=cardCount>2?2:1;
+    var rowH=Math.round(dh/numRows), colW=Math.round(dw/numCols);
+    var botH=Math.round(rowH*0.30);
+    var cropScale=Math.min(5,900/colW);
+    var ccw=Math.round(colW*cropScale), cch=Math.round(botH*cropScale);
+    for(var row=0;row<numRows;row++){
+      for(var col=0;col<numCols;col++){
+        var cc=document.createElement('canvas');
+        cc.width=ccw; cc.height=cch;
+        cc.getContext('2d').drawImage(freezeCanvas,col*colW,(row+1)*rowH-botH,colW,botH,0,0,ccw,cch);
+        crops.push(cc.toDataURL('image/jpeg',0.92).split(',')[1]);
+      }
+    }
+  }
+
+  var namePromise=runScan(k,b64,'image/jpeg',cardCount);
+  var cropPromises=crops.map(function(crop,i){ return runSingleCropScan(k,crop,i); });
+
+  Promise.all([namePromise].concat(cropPromises)).then(function(results){
+    var nameArr=results[0];
+    var numberArr=results.slice(1);
+    var merged=nameArr.map(function(c,i){
+      return {name:c.name||'',set_name:c.set_name||'',card_number:numberArr[i]||''};
+    });
+    merged=applyCorrections(merged);
+    setLiveStatus('ok', merged.length+' card'+(merged.length===1?'':'s')+' detected');
+    if(merged.length) mergeLiveResults(merged);
+    else toast('No cards detected','');
   }).catch(function(e){
     log('Live scan err: '+e.message,'e');
-    setLiveStatus('err',e.message.substring(0,50));
-    toast('Scan failed: '+e.message,'error');
+    setLiveStatus('err',e.message.substring(0,40));
+    toast('Scan failed','error');
   }).finally(function(){
     liveScanning=false;
     btnCapture.disabled=false;
-    btnCapture.textContent='📸 Scan Now';
-    liveCountdown=liveIntervalSec;
+    btnCapture.textContent='📸 Freeze & Scan';
+    // Auto-unfreeze after scan
+    setTimeout(unfreeze, 1500);
   });
 }
 
@@ -1088,28 +1140,62 @@ function prependLiveCard(c){
   var empty=liveList.querySelector('.live-empty');
   if(empty) empty.remove();
   var item=document.createElement('div');
-  item.className='live-card-item'; item.id='lci-'+c._lid;
+  var lid=c._lid;
+  item.className='live-card-item'; item.id='lci-'+lid;
   item.innerHTML=
-    '<div class="lci-name">'+esc(c.name||'Unknown')+'</div>'+
-    '<div class="lci-meta">'+
-      (c.card_number?'<span>'+esc(c.card_number)+'</span>':'<span style="color:var(--muted)">No number</span>')+
-      (c.set_name?' &nbsp;·&nbsp; '+esc(c.set_name):'')+
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">'+
+      '<div style="flex:1;min-width:0;">'+
+        '<div class="lci-name">'+esc(c.name||'Unknown')+'</div>'+
+        '<div class="lci-meta">'+
+          (c.card_number?'<span>'+esc(c.card_number)+'</span>':'<span style="color:var(--muted)">No number found</span>')+
+          (c.set_name?' &nbsp;·&nbsp; <span>'+esc(c.set_name)+'</span>':'')+
+          (c._corrected?'&nbsp;<span style="color:#aaf;font-size:0.65rem;">✦ memory</span>':'')+
+        '</div>'+
+      '</div>'+
+      '<button class="lci-dismiss" onclick="liveDismiss(\''+lid+'\')">✕</button>'+
     '</div>'+
-    '<div class="lci-actions">'+
-      '<button class="lci-save" onclick="liveSaveOne(\''+c._lid+'\')">＋ Save</button>'+
-      '<button class="lci-dismiss" onclick="liveDismiss(\''+c._lid+'\')">✕</button>'+
+    '<div style="display:flex;align-items:center;gap:8px;margin-top:9px;">'+
+      '<label style="font-size:0.72rem;color:var(--muted);white-space:nowrap;">QTY</label>'+
+      '<input type="number" min="1" value="1" id="lci-qty-'+lid+'" onchange="liveUpdateQty(\''+lid+'\')" style="width:54px;background:rgba(255,255,255,0.07);border:1px solid var(--border);border-radius:6px;padding:4px 6px;color:var(--text);font-size:0.85rem;text-align:center;" />'+
+      '<button class="lci-save auto-saved" id="lci-savebtn-'+lid+'" onclick="liveSaveOne(\''+lid+'\')">✎ Fix</button>'+
     '</div>';
   liveList.insertBefore(item,liveList.firstChild);
+  // Auto-save immediately
+  liveAutoSave(c);
+}
+
+function liveUpdateQty(lid){
+  var c=liveCards.find(function(x){return x._lid==lid;}); if(!c||!c._savedId) return;
+  var qtyEl=document.getElementById('lci-qty-'+lid);
+  var qty=qtyEl?Math.max(1,parseInt(qtyEl.value)||1):1;
+  var idx=cards.findIndex(function(x){return x._id===c._savedId;});
+  if(idx>=0){cards[idx].qty=qty; saveCards(); renderTable();}
+}
+
+function liveAutoSave(c){
+  // Auto-save with qty=1, broadcast to extension
+  var entry={name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:1,notes:'',date_scanned:new Date().toLocaleDateString(),_id:Date.now()};
+  c._savedId = entry._id;
+  cards.push(entry); saveCards(); renderTable();
+  broadcastToExtension(c.name||'', c.card_number||'');
+  log('Live auto-saved: '+(c.name||'?')+' '+(c.card_number||''),'ok');
 }
 
 function liveSaveOne(lid){
+  // "Fix" button — update the already-saved entry with corrected values + qty
   var c=liveCards.find(function(x){return x._lid==lid;}); if(!c)return;
-  cards.push({name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:1,notes:'',date_scanned:new Date().toLocaleDateString(),_id:Date.now()});
+  var qtyEl=document.getElementById('lci-qty-'+lid);
+  var qty=qtyEl?Math.max(1,parseInt(qtyEl.value)||1):1;
+  // Update existing saved entry
+  var idx=cards.findIndex(function(x){return x._id===c._savedId;});
+  var updated={name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:qty,notes:'',date_scanned:new Date().toLocaleDateString(),_id:c._savedId||Date.now()};
+  if(idx>=0){cards[idx]=updated;}else{cards.push(updated);}
   saveCards(); renderTable();
-  if(c._manualEdit && c.name && c.card_number) saveCorrection(c.name, c.card_number, c.set_name);
-  toast((c.name||'Card')+' saved!','success');
-  var btn=document.querySelector('#lci-'+lid+' .lci-save');
-  if(btn){btn.textContent='✓ Saved';btn.className='lci-save saved';btn.disabled=true;}
+  if(c.name && c.card_number) saveCorrection(c.name, c.card_number, c.set_name);
+  broadcastToExtension(c.name||'', c.card_number||'');
+  toast((c.name||'Card')+' updated!','success');
+  var btn=document.getElementById('lci-savebtn-'+lid);
+  if(btn){btn.textContent='✓ Fixed!';btn.disabled=true;}
 }
 
 function liveDismiss(lid){
@@ -1288,6 +1374,127 @@ function renderCorrections(){
     if(saveBtn) saveBtn.addEventListener('click', function(){ saveCorrectionEdit(k); });
     if(delBtn) delBtn.addEventListener('click', function(){ deleteCorrection(k); });
   });
+}
+
+// ── iPhone relay polling ─────────────────────────────────────
+function toggleIphonePanel(){
+  var body = document.getElementById('iphone-body');
+  var chevron = document.getElementById('iphone-chevron');
+  var open = body.style.display === 'block';
+  body.style.display = open ? 'none' : 'block';
+  chevron.textContent = open ? '▼' : '▲';
+}
+
+function toggleIphonePolling(){
+  if(iPhonePolling){ stopIphonePolling(); } else { startIphonePolling(); }
+}
+
+function startIphonePolling(){
+  var k = apiKeyEl.value.trim()||localStorage.getItem('pokescan_key')||'';
+  if(!k){ toast('Enter API key first','error'); return; }
+  iPhonePolling = true;
+  document.getElementById('btn-iphone-toggle').textContent = '⏹ Stop Listening';
+  document.getElementById('btn-iphone-toggle').style.background = '#555';
+  document.getElementById('iphone-dot').style.background = '#4caf50';
+  document.getElementById('iphone-status-lbl').textContent = 'Listening…';
+  // Open panel if closed
+  document.getElementById('iphone-body').style.display = 'block';
+  document.getElementById('iphone-chevron').textContent = '▲';
+  log('iPhone relay: started polling','ok');
+  pollIphone();
+}
+
+function stopIphonePolling(){
+  iPhonePolling = false;
+  if(iPhonePollTimer) clearTimeout(iPhonePollTimer);
+  document.getElementById('btn-iphone-toggle').textContent = '▶ Start Listening';
+  document.getElementById('btn-iphone-toggle').style.background = '#e86b2a';
+  document.getElementById('iphone-dot').style.background = '#666';
+  document.getElementById('iphone-status-lbl').textContent = 'Off';
+  log('iPhone relay: stopped');
+}
+
+function pollIphone(){
+  if(!iPhonePolling) return;
+  fetch(WORKER + '/relay/poll')
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      if(data.pending && data.b64){
+        log('iPhone image received! '+data.b64.length+'chars cardCount='+data.cardCount,'ok');
+        document.getElementById('iphone-last').textContent = '📷 Photo received at '+new Date().toLocaleTimeString();
+        document.getElementById('iphone-status-lbl').textContent = 'Scanning…';
+        document.getElementById('iphone-dot').style.background = '#e86b2a';
+        processIphoneImage(data.b64, data.mime||'image/jpeg', data.cardCount||4);
+      } else {
+        // No image, poll again in 2 seconds
+        iPhonePollTimer = setTimeout(pollIphone, 2000);
+      }
+    })
+    .catch(function(e){
+      log('Poll error: '+e.message,'e');
+      iPhonePollTimer = setTimeout(pollIphone, 3000);
+    });
+}
+
+function processIphoneImage(b64, mime, cardCount){
+  var k = apiKeyEl.value.trim()||localStorage.getItem('pokescan_key')||'';
+  // Generate per-card crops from b64
+  var img = new Image();
+  img.onload = function(){
+    var iw=img.naturalWidth, ih=img.naturalHeight;
+    var maxW=1400, scale=Math.min(1,maxW/iw);
+    var dw=Math.round(iw*scale), dh=Math.round(ih*scale);
+    var c=document.createElement('canvas'); c.width=dw; c.height=dh;
+    c.getContext('2d').drawImage(img,0,0,dw,dh);
+
+    // Generate per-card crops
+    var numRows=(dh>dw*1.2)?2:1;
+    var numCols=cardCount>2?2:cardCount>1?2:1;
+    var rowH=Math.round(dh/numRows), colW=Math.round(dw/numCols);
+    var botH=Math.round(rowH*0.30);
+    var cropScale=Math.min(5,900/colW);
+    var ccw=Math.round(colW*cropScale), cch=Math.round(botH*cropScale);
+    var crops=[];
+    for(var row=0;row<numRows;row++){
+      for(var col=0;col<numCols;col++){
+        var cc=document.createElement('canvas'); cc.width=ccw; cc.height=cch;
+        cc.getContext('2d').drawImage(c,col*colW,(row+1)*rowH-botH,colW,botH,0,0,ccw,cch);
+        crops.push(cc.toDataURL('image/jpeg',0.92).split(',')[1]);
+      }
+    }
+
+    // Resized full image b64
+    var fullB64 = c.toDataURL('image/jpeg',0.85).split(',')[1];
+
+    var t0=Date.now();
+    var namePromise=runScan(k,fullB64,'image/jpeg',cardCount);
+    var cropPromises=crops.slice(0,cardCount).map(function(crop,i){ return runSingleCropScan(k,crop,i); });
+
+    Promise.all([namePromise].concat(cropPromises)).then(function(results){
+      var nameArr=results[0], numberArr=results.slice(1);
+      var merged=nameArr.map(function(c,i){
+        return {name:c.name||'',set_name:c.set_name||'',card_number:numberArr[i]||''};
+      });
+      merged=applyCorrections(merged);
+      autoSaveAll(merged);
+      foundCards=merged;
+      showResultsCards(merged);
+      var elapsed=((Date.now()-t0)/1000).toFixed(1);
+      toast('📱 '+merged.length+' card'+(merged.length===1?'':'s')+' scanned! ('+elapsed+'s)','success');
+      document.getElementById('iphone-status-lbl').textContent = 'Listening…';
+      document.getElementById('iphone-dot').style.background = '#4caf50';
+      log('iPhone scan done: '+merged.map(function(c){return c.name;}).join(', '),'ok');
+    }).catch(function(e){
+      log('iPhone scan error: '+e.message,'e');
+      toast('Scan failed: '+e.message,'error');
+      document.getElementById('iphone-status-lbl').textContent = 'Error — retrying';
+      document.getElementById('iphone-dot').style.background = '#f44';
+    }).finally(function(){
+      // Resume polling
+      iPhonePollTimer = setTimeout(pollIphone, 2000);
+    });
+  };
+  img.src = 'data:'+mime+';base64,'+b64;
 }
 
 // ── Collection ────────────────────────────────────────────────

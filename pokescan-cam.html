@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>PokéScan Cam</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: -apple-system, sans-serif; }
+
+    #viewfinder {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+    }
+
+    video {
+      position: fixed; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover;
+    }
+
+    /* Grid overlay for 4-card layout */
+    #grid-overlay {
+      position: fixed; inset: 0;
+      pointer-events: none;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+    }
+    .grid-cell {
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+    #grid-overlay.single { display: none; }
+
+    /* Card count selector */
+    #count-bar {
+      position: fixed; top: env(safe-area-inset-top, 20px); left: 0; right: 0;
+      display: flex; justify-content: center; gap: 8px;
+      padding: 12px 16px;
+      z-index: 10;
+    }
+    .cnt-btn {
+      padding: 6px 16px;
+      border-radius: 20px;
+      border: 1px solid rgba(255,255,255,0.4);
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      font-size: 0.85rem;
+      font-weight: 600;
+      backdrop-filter: blur(10px);
+    }
+    .cnt-btn.active {
+      background: #e86b2a;
+      border-color: #e86b2a;
+    }
+
+    /* Status bar */
+    #status-bar {
+      position: fixed; top: calc(env(safe-area-inset-top, 20px) + 52px);
+      left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(10px);
+      color: #fff;
+      font-size: 0.8rem;
+      padding: 6px 16px;
+      border-radius: 20px;
+      z-index: 10;
+      white-space: nowrap;
+      transition: all 0.3s;
+    }
+    #status-bar.ok { background: rgba(0,180,100,0.8); }
+    #status-bar.err { background: rgba(220,50,50,0.8); }
+    #status-bar.sending { background: rgba(232,107,42,0.8); }
+
+    /* Last scanned card */
+    #last-card {
+      position: fixed;
+      top: calc(env(safe-area-inset-top, 20px) + 90px);
+      left: 16px; right: 16px;
+      background: rgba(0,0,0,0.65);
+      backdrop-filter: blur(10px);
+      border-radius: 12px;
+      padding: 10px 14px;
+      color: #fff;
+      font-size: 0.8rem;
+      z-index: 10;
+      display: none;
+    }
+    #last-card .lc-name { font-weight: 700; font-size: 0.9rem; }
+    #last-card .lc-num { color: #e86b2a; font-size: 0.8rem; }
+
+    /* Big shutter button */
+    #shutter-wrap {
+      position: fixed;
+      bottom: calc(env(safe-area-inset-bottom, 20px) + 20px);
+      left: 0; right: 0;
+      display: flex; justify-content: center; align-items: center; gap: 24px;
+      z-index: 10;
+    }
+    #shutter-btn {
+      width: 78px; height: 78px;
+      border-radius: 50%;
+      border: 4px solid #fff;
+      background: rgba(255,255,255,0.9);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.8rem;
+      transition: transform 0.1s;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+    #shutter-btn:active { transform: scale(0.92); background: #e86b2a; }
+    #shutter-btn.sending { background: #e86b2a; border-color: #e86b2a; }
+    #shutter-btn.done { background: #4caf50; border-color: #4caf50; }
+
+    /* Flash effect */
+    #flash {
+      position: fixed; inset: 0;
+      background: #fff;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 20;
+      transition: opacity 0.05s;
+    }
+    #flash.flash { opacity: 0.8; }
+
+    /* Settings panel */
+    #settings-btn {
+      position: fixed; top: env(safe-area-inset-top, 20px); right: 16px;
+      background: rgba(0,0,0,0.5); backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.3);
+      color: #fff; border-radius: 50%; width: 36px; height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1rem; cursor: pointer; z-index: 15;
+    }
+    #settings-panel {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.92);
+      z-index: 30; display: none; flex-direction: column;
+      padding: calc(env(safe-area-inset-top,20px) + 20px) 24px 40px;
+      gap: 16px; overflow-y: auto;
+    }
+    #settings-panel.open { display: flex; }
+    .sp-title { color: #fff; font-size: 1.2rem; font-weight: 700; margin-bottom: 4px; }
+    .sp-label { color: #aaa; font-size: 0.78rem; margin-bottom: 4px; }
+    .sp-input {
+      width: 100%; padding: 12px; border-radius: 10px;
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+      color: #fff; font-size: 0.9rem;
+    }
+    .sp-btn {
+      padding: 13px; border-radius: 10px; border: none;
+      background: #e86b2a; color: #fff; font-size: 1rem; font-weight: 600;
+      cursor: pointer;
+    }
+    .sp-close {
+      padding: 13px; border-radius: 10px;
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+      color: #fff; font-size: 1rem; cursor: pointer;
+    }
+    canvas { display: none; }
+  </style>
+</head>
+<body>
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+  <div id="flash"></div>
+
+  <!-- Grid overlay -->
+  <div id="grid-overlay">
+    <div class="grid-cell"></div>
+    <div class="grid-cell"></div>
+    <div class="grid-cell"></div>
+    <div class="grid-cell"></div>
+  </div>
+
+  <!-- Card count -->
+  <div id="count-bar">
+    <button class="cnt-btn" data-n="1" onclick="setCount(1)">1 Card</button>
+    <button class="cnt-btn active" data-n="4" onclick="setCount(4)">4 Cards</button>
+  </div>
+
+  <div id="status-bar">📷 Ready — tap to scan</div>
+
+  <div id="last-card">
+    <div class="lc-name" id="lc-name"></div>
+    <div class="lc-num" id="lc-num"></div>
+  </div>
+
+  <!-- Settings -->
+  <div id="settings-btn" onclick="openSettings()">⚙</div>
+  <div id="settings-panel">
+    <div class="sp-title">🎴 PokéScan Cam</div>
+    <div>
+      <div class="sp-label">Worker URL</div>
+      <input class="sp-input" id="sp-worker" placeholder="https://your-worker.workers.dev" />
+    </div>
+    <button class="sp-btn" onclick="saveSettings()">Save</button>
+    <button class="sp-close" onclick="closeSettings()">Close</button>
+    <div style="color:#666;font-size:0.72rem;margin-top:8px;">
+      Add to Home Screen in Safari for full-screen experience.<br>
+      Keep PokéScan open on your Mac — it will auto-scan when you shoot.
+    </div>
+  </div>
+
+  <!-- Shutter -->
+  <div id="shutter-wrap">
+    <button id="shutter-btn" onclick="shoot()">📸</button>
+  </div>
+
+  <script>
+    var WORKER = localStorage.getItem('pokescan_worker') || 'https://solitary-hill-3d9b.nbethard.workers.dev';
+    var cardCount = 4;
+    var sending = false;
+    var stream = null;
+
+    // Start camera
+    function startCamera(){
+      navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { exact: 'environment' },
+          width: { ideal: 3840 },
+          height: { ideal: 2160 }
+        }
+      }).then(function(s){
+        stream = s;
+        document.getElementById('video').srcObject = s;
+        setStatus('📷 Ready — tap to scan', '');
+      }).catch(function(e){
+        // Fallback without exact
+        navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
+        }).then(function(s){
+          stream = s;
+          document.getElementById('video').srcObject = s;
+          setStatus('📷 Ready — tap to scan', '');
+        }).catch(function(e2){
+          setStatus('Camera error: ' + e2.message, 'err');
+        });
+      });
+    }
+
+    function setCount(n){
+      cardCount = n;
+      document.querySelectorAll('.cnt-btn').forEach(function(b){
+        b.classList.toggle('active', parseInt(b.dataset.n) === n);
+      });
+      var grid = document.getElementById('grid-overlay');
+      grid.className = n === 1 ? 'single' : '';
+    }
+
+    function shoot(){
+      if(sending) return;
+      var video = document.getElementById('video');
+      var canvas = document.getElementById('canvas');
+      if(!video.videoWidth){ setStatus('Camera not ready', 'err'); return; }
+
+      // Flash
+      var flash = document.getElementById('flash');
+      flash.classList.add('flash');
+      setTimeout(function(){ flash.classList.remove('flash'); }, 150);
+
+      // Capture full resolution
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+
+      // Compress - aim for under 3MB base64
+      var quality = 0.88;
+      var b64 = canvas.toDataURL('image/jpeg', quality).split(',')[1];
+      if(b64.length > 3200000){ b64 = canvas.toDataURL('image/jpeg', 0.70).split(',')[1]; }
+      if(b64.length > 3200000){ b64 = canvas.toDataURL('image/jpeg', 0.55).split(',')[1]; }
+
+      sending = true;
+      var btn = document.getElementById('shutter-btn');
+      btn.textContent = '⏳';
+      btn.className = 'sending';
+      setStatus('Sending to Mac…', 'sending');
+
+      fetch(WORKER + '/relay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ b64: b64, mime: 'image/jpeg', cardCount: cardCount })
+      }).then(function(r){ return r.json(); }).then(function(data){
+        if(data.ok){
+          btn.textContent = '✓';
+          btn.className = 'done';
+          setStatus('✓ Sent! Mac is scanning…', 'ok');
+          setTimeout(function(){
+            btn.textContent = '📸';
+            btn.className = '';
+            setStatus('📷 Ready — tap to scan', '');
+            sending = false;
+          }, 1500);
+        } else {
+          throw new Error(data.error || 'Failed');
+        }
+      }).catch(function(e){
+        btn.textContent = '📸';
+        btn.className = '';
+        setStatus('Error: ' + e.message, 'err');
+        sending = false;
+      });
+    }
+
+    function setStatus(msg, cls){
+      var el = document.getElementById('status-bar');
+      el.textContent = msg;
+      el.className = cls || '';
+    }
+
+    function openSettings(){
+      document.getElementById('sp-worker').value = WORKER;
+      document.getElementById('settings-panel').classList.add('open');
+    }
+    function closeSettings(){ document.getElementById('settings-panel').classList.remove('open'); }
+    function saveSettings(){
+      WORKER = document.getElementById('sp-worker').value.trim().replace(/\/$/, '');
+      localStorage.setItem('pokescan_worker', WORKER);
+      closeSettings();
+      setStatus('Settings saved!', 'ok');
+      setTimeout(function(){ setStatus('📷 Ready — tap to scan', ''); }, 1500);
+    }
+
+    startCamera();
+  </script>
+</body>
+</html>
