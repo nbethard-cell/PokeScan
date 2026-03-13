@@ -342,7 +342,13 @@
   <div class="cpanel" id="corrections-panel">
     <div class="cbar">
       <div class="clbl">Card Corrections: <span id="corr-count">0</span></div>
-      <div style="display:flex;gap:7px;"><button class="btn bb" onclick="updateAllCorrections()">↑ Update All</button><button class="btn br" onclick="clearAllCorrections()">✕ Clear All</button></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn bb" onclick="updateAllCorrections()">↑ Update All</button>
+        <button class="btn bb" onclick="exportCorrections()">⬇ Export</button>
+        <button class="btn bb" onclick="document.getElementById('import-corrections-input').click()">⬆ Import</button>
+        <button class="btn br" onclick="clearAllCorrections()">✕ Clear All</button>
+        <input type="file" id="import-corrections-input" accept=".json" style="display:none" onchange="importCorrections(this)"/>
+      </div>
     </div>
     <div id="corrections-list">
       <div class="corr-empty">No corrections yet — edit a card number and save to remember it</div>
@@ -386,6 +392,16 @@ var cards = [];
 try { cards = JSON.parse(localStorage.getItem('pokescan_cards')||'[]'); } catch(e){}
 var corrections = {};
 try { corrections = JSON.parse(localStorage.getItem('pokescan_corrections')||'{}'); } catch(e){}
+// Merge in seed corrections for any keys not already customised by user
+(function(){
+  var seeds = [{name:"Dawn",card_number:"118/094",set_name:"Prismatic Evolutions"}, {name:"Landorus",card_number:"131/086",set_name:"Stellar Crown"}];
+  var changed = false;
+  seeds.forEach(function(s){
+    var k = s.name.toLowerCase().replace(/[^a-z0-9]/g,'_');
+    if(!corrections[k]){ corrections[k] = s; changed = true; }
+  });
+  if(changed) localStorage.setItem('pokescan_corrections', JSON.stringify(corrections));
+})();
 var currentB64 = null, currentStripB64 = null, currentCardCrops = [], currentMime = 'image/jpeg', foundCards = [];
 var camStream = null, liveScanning = false, liveIntervalSec = 10;
 var liveCountTimer = null, liveCountdown = 0, liveCards = [];
@@ -1096,6 +1112,57 @@ function saveCorrectionEdit(k){
     toast('Correction updated!','success');
     log('Correction updated: '+corrections[k].name+' = '+corrections[k].card_number,'ok');
   }
+}
+
+function getSeedCorrections(){
+  // Known OCR misreads discovered during testing — seeded as defaults
+  var seeds = [{name:"Dawn",card_number:"118/094",set_name:"Prismatic Evolutions"}, {name:"Landorus",card_number:"131/086",set_name:"Stellar Crown"}];
+  var seeded = {};
+  seeds.forEach(function(s){ seeded[corrKey(s.name)] = s; });
+  return seeded;
+}
+
+function exportCorrections(){
+  var keys = Object.keys(corrections);
+  if(!keys.length){ toast('No corrections to export'); return; }
+  var data = { version:1, exported: new Date().toISOString(), corrections: corrections };
+  var blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'pokescan-corrections-' + new Date().toISOString().slice(0,10) + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  log('Exported '+keys.length+' corrections','ok');
+  toast('Exported '+keys.length+' corrections!','success');
+}
+
+function importCorrections(input){
+  var file = input.files[0]; if(!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e){
+    try {
+      var data = JSON.parse(e.target.result);
+      // Support both raw object and {corrections:{}} wrapper
+      var incoming = data.corrections || data;
+      var added = 0, updated = 0;
+      Object.keys(incoming).forEach(function(k){
+        var c = incoming[k];
+        if(!c.name || !c.card_number) return;
+        var key = corrKey(c.name);
+        if(corrections[key]){ updated++; } else { added++; }
+        corrections[key] = { name:c.name, card_number:c.card_number, set_name:c.set_name||'' };
+      });
+      localStorage.setItem('pokescan_corrections', JSON.stringify(corrections));
+      renderCorrections();
+      toast('Imported: '+added+' new, '+updated+' updated','success');
+      log('Import: '+added+' new '+updated+' updated corrections','ok');
+    } catch(err) {
+      toast('Import failed: invalid JSON','error');
+      log('Import error: '+err.message,'e');
+    }
+    input.value = '';
+  };
+  reader.readAsText(file);
 }
 
 function renderCorrections(){
