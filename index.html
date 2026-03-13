@@ -628,15 +628,19 @@ async function runNumberScanPerCard(apiKey, crops, nameArr, cardCount){
       if(!raw.startsWith('{')) raw='{'+raw;
       var parsed = JSON.parse(raw);
       var cardNum = parsed.card_number || '';
-      // Quick sanity: if number part before slash starts with 7 and is 3 digits,
-      // it may be a misread 1 — flag it for a retry with extra hint
+      // Quick sanity: if 3-digit number starts with 4 or 7, could be misread 1
+      // Also catches T/I prefix which are almost certainly 1
       var needsRetry = false;
-      var m = cardNum.match(/^(\d+)\//);
-      if(m && m[1].length === 3 && m[1][0] === '7') needsRetry = true;
+      var m = cardNum.match(/^([\dTI]+)\//);
+      if(m){
+        var pre = m[1];
+        if(pre.length === 3 && /^[47TI]/.test(pre)) needsRetry = true;
+        if(/[TI]/.test(pre)) needsRetry = true; // any T or I in number = misread
+      }
       if(needsRetry){
         log('Card '+(i+1)+' possible 7→1 misread ('+cardNum+'), retrying…','w');
         try {
-          var retryPrompt = 'You are a JSON API. ONE Pokemon card bottom shown. Find collector number.\n\nI think I may have misread it as "'+cardNum+'" but the first digit might be 1 not 7 — please look very carefully at the first digit. Could it be 1 (one) instead of 7? Both look similar in small print.\n\nReturn: {"card_number":"..."} JSON ONLY.';
+          var retryPrompt = 'You are a JSON API. ONE Pokemon card bottom shown. Find collector number.\n\nI previously read it as "'+cardNum+'" but I may have misread the first digit. In tiny printed text, the digit 1 is very commonly misread as 7 or 4 because serifs and print quality make them look similar.\n\nPlease look very carefully at the FIRST digit of the number before the slash. Is it definitely '+m[1][0]+', or could it actually be 1?\n\nReturn the corrected number: {"card_number":"..."} JSON ONLY.';
           var res2 = await fetch(WORKER,{method:'POST',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({apiKey:apiKey,model:'claude-sonnet-4-20250514',max_tokens:60,
               system:'You are a JSON-only API.',
