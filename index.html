@@ -136,6 +136,7 @@
 
   /* Upload results */
   #results-area{padding:16px;min-height:100px;}
+  .tcg-suggestion{animation:fadeIn 0.3s ease;}
   .results-placeholder{text-align:center;color:var(--muted);font-size:0.78rem;padding:28px 0;line-height:1.8;}
   .results-placeholder .big{font-size:2rem;display:block;margin-bottom:8px;}
   .spinner-wrap{text-align:center;padding:28px 0;}
@@ -227,6 +228,7 @@
   .count-btn.auto{background:rgba(74,240,255,0.08);border-color:rgba(74,240,255,0.25);color:var(--accent);}
   .count-btn.auto.active{background:rgba(74,240,255,0.18);}
 </style>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 <div class="wrap">
@@ -323,6 +325,26 @@
   </div>
 
   <!-- iPhone relay panel -->
+  <!-- Learned DB panel -->
+  <div class="panel" id="learneddb-panel">
+    <div class="phead" style="cursor:pointer;" onclick="toggleLearnedDBPanel()">
+      <div class="dot dot-b" style="background:#4caf50;"></div>
+      <span class="ptitle">🧠 Learned Card DB</span>
+      <span id="learneddb-count-lbl" style="font-size:0.72rem;color:var(--muted);margin-left:8px;">0 cards</span>
+      <span style="margin-left:auto;font-size:0.75rem;color:var(--muted);" id="learneddb-chevron">▼</span>
+    </div>
+    <div id="learneddb-body" style="display:none;padding:14px 16px;border-top:1px solid var(--border);">
+      <p style="font-size:0.78rem;color:var(--muted);margin-bottom:12px;">Cards learned from TCG database matches and your corrections. PokéScan checks here first before calling Claude — instant results for cards seen before.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+        <button onclick="exportLearnedDB()" style="flex:1;min-width:120px;padding:9px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.05);color:#fff;font-size:0.8rem;cursor:pointer;">⬇ Export DB</button>
+        <button onclick="document.getElementById('import-learneddb-input').click()" style="flex:1;min-width:120px;padding:9px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.05);color:#fff;font-size:0.8rem;cursor:pointer;">⬆ Import DB</button>
+        <button onclick="clearLearnedDB()" style="padding:9px 14px;border-radius:8px;border:1px solid rgba(220,50,50,0.3);background:rgba(220,50,50,0.08);color:#e55;font-size:0.8rem;cursor:pointer;">✕ Clear</button>
+      </div>
+      <input type="file" id="import-learneddb-input" accept=".json" style="display:none" onchange="importLearnedDB(this)"/>
+      <div id="learneddb-stats" style="font-size:0.75rem;color:var(--muted);"></div>
+    </div>
+  </div>
+
   <div class="panel" id="iphone-panel">
     <div class="phead" style="cursor:pointer;" onclick="toggleIphonePanel()">
       <div class="dot dot-b" id="iphone-dot" style="background:#666;"></div>
@@ -378,7 +400,7 @@
       <div class="tlbl">Collection: <span id="card-count">0</span> cards</div>
       <div class="bgrp">
         <button class="btn bg" id="btn-csv">⬇ Export CSV</button>
-        <button class="btn bb" id="btn-sheets">📊 Open in Sheets</button>
+        <button class="btn bb" id="btn-sheets">📊 Export to Sheets</button>
         <button class="btn br" id="btn-clr-table">✕ Clear All</button>
       </div>
     </div>
@@ -391,6 +413,19 @@
   </div>
 </div>
 <div id="toast"></div>
+
+<!-- Google Sheets Export Modal -->
+<div id="sheets-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100;display:none;align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#1a1a2e;border:1px solid rgba(255,255,255,0.15);border-radius:16px;width:100%;max-width:480px;overflow:hidden;">
+    <div style="padding:18px 20px;border-bottom:1px solid rgba(255,255,255,0.1);display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-size:1rem;font-weight:600;color:#fff;">📊 Export to Google Sheets</div>
+      <button onclick="closeSheetsModal()" style="background:none;border:none;color:#888;font-size:1.2rem;cursor:pointer;">✕</button>
+    </div>
+    <div style="padding:18px 20px;" id="sheets-modal-body">
+      <!-- Dynamic content -->
+    </div>
+  </div>
+</div>
 
 <script>
 var WORKER = 'https://solitary-hill-3d9b.nbethard.workers.dev/';
@@ -410,6 +445,83 @@ try { corrections = JSON.parse(localStorage.getItem('pokescan_corrections')||'{}
   });
   if(changed) localStorage.setItem('pokescan_corrections', JSON.stringify(corrections));
 })();
+// ── Learned Card DB ───────────────────────────────────────────
+// Key: normalised name → {name, card_number, set_name, tcg_id, hits, last_seen, source}
+var learnedDB = {};
+(function(){
+  try { learnedDB = JSON.parse(localStorage.getItem('pokescan_learneddb')||'{}'); } catch(e){}
+  // Seed from existing corrections so nothing is lost
+  Object.values(corrections).forEach(function(c){
+    if(c.name) learnDB(c.name, c.card_number, c.set_name, '', 'correction');
+  });
+})();
+
+function dbKey(name){ return (name||'').toLowerCase().replace(/[^a-z0-9]/g,' ').replace(/\s+/g,' ').trim(); }
+
+function learnDB(name, card_number, set_name, tcg_id, source){
+  if(!name || !card_number) return;
+  var k = dbKey(name);
+  var existing = learnedDB[k];
+  var now = Date.now();
+  if(existing){
+    existing.hits = (existing.hits||0) + 1;
+    existing.last_seen = now;
+    // Update fields if newer info available
+    if(card_number) existing.card_number = card_number;
+    if(set_name)    existing.set_name    = set_name;
+    if(tcg_id)      existing.tcg_id      = tcg_id;
+    existing.source = source || existing.source;
+  } else {
+    learnedDB[k] = { name:name, card_number:card_number, set_name:set_name||'', tcg_id:tcg_id||'', hits:1, last_seen:now, first_seen:now, source:source||'tcg' };
+  }
+  localStorage.setItem('pokescan_learneddb', JSON.stringify(learnedDB));
+}
+
+function lookupDB(name){
+  if(!name) return null;
+  var k = dbKey(name);
+  // Exact match
+  if(learnedDB[k]) return learnedDB[k];
+  // Partial match — name starts with or contains
+  var keys = Object.keys(learnedDB);
+  var kn = k;
+  for(var i=0;i<keys.length;i++){
+    if(keys[i]===kn || keys[i].indexOf(kn)===0 || kn.indexOf(keys[i])===0){
+      return learnedDB[keys[i]];
+    }
+  }
+  return null;
+}
+
+function exportLearnedDB(){
+  var data = JSON.stringify(learnedDB, null, 2);
+  var blob = new Blob([data], {type:'application/json'});
+  dl(blob, 'pokescan_learned_db_'+new Date().toISOString().slice(0,10)+'.json');
+  toast('Learned DB exported! ('+Object.keys(learnedDB).length+' cards)','success');
+}
+
+function importLearnedDB(input){
+  var file = input.files[0]; if(!file) return;
+  var r = new FileReader();
+  r.onload = function(e){
+    try{
+      var imported = JSON.parse(e.target.result);
+      var count = 0;
+      Object.keys(imported).forEach(function(k){
+        var c = imported[k];
+        if(!learnedDB[k] || (imported[k].last_seen||0) > (learnedDB[k].last_seen||0)){
+          learnedDB[k] = c; count++;
+        }
+      });
+      localStorage.setItem('pokescan_learneddb', JSON.stringify(learnedDB));
+      toast('Imported '+count+' entries into learned DB!','success');
+      log('Learned DB import: '+count+' new/updated entries','ok');
+    } catch(err){ toast('Import failed: '+err.message,'error'); }
+  };
+  r.readAsText(file);
+  input.value='';
+}
+
 var currentB64 = null, currentStripB64 = null, currentCardCrops = [], currentMime = 'image/jpeg', foundCards = [];
 var iPhonePolling = false, iPhonePollTimer = null;
 var camStream = null, liveScanning = false, liveIntervalSec = 10;
@@ -537,6 +649,7 @@ function processQueue(){
     if(batchResults.length){
       foundCards = batchResults;
       showResultsCards(batchResults);
+      tcgVerifyAll(batchResults);
     } else {
       showResultsPlaceholder();
     }
@@ -723,28 +836,59 @@ btnScan.onclick=function(){
   var t0=Date.now();
   btnScan.disabled=true; btnScan.textContent='Scanning…';
   showResultsLoading();
-  // Fire name scan + all card crop scans IN PARALLEL
+  // Fire name scan first, then check DB, then only Claude-scan crops with no DB hit
   var namePromise = runScan(k, currentB64, currentMime, uploadCardCount);
   var cropCount = uploadCardCount > 0 ? uploadCardCount : currentCardCrops.length;
-  var cropPromises = currentCardCrops.slice(0, cropCount).map(function(crop, i){
-    return runSingleCropScan(k, crop, i);
-  });
-  Promise.all([namePromise].concat(cropPromises)).then(function(results){
-    var nameArr = results[0];
-    var numberArr = results.slice(1);
-    log('Parallel done: '+nameArr.length+' names, '+numberArr.length+' numbers in '+((Date.now()-t0)/1000).toFixed(1)+'s','ok');
-    // Merge names + numbers by index
-    var merged = nameArr.map(function(c, i){
-      return { name:c.name||'', set_name:c.set_name||'', card_number: numberArr[i]||'' };
+
+  namePromise.then(function(nameArr){
+    log('Names: '+nameArr.map(function(c){return c.name;}).join(', '),'ok');
+    // For each card, check learned DB first
+    var dbHits = [], missIndexes = [];
+    nameArr.forEach(function(c, i){
+      var hit = lookupDB(c.name);
+      if(hit && hit.card_number){
+        log('DB HIT: "'+c.name+'" → '+hit.card_number+' (seen '+hit.hits+'x)','ok');
+        dbHits.push({ idx:i, result:{ name:hit.name||c.name, card_number:hit.card_number, set_name:hit.set_name||c.set_name, _fromDB:true, _dbHits:hit.hits } });
+      } else {
+        missIndexes.push(i);
+      }
     });
-    return merged;
+
+    // Only run crop scans for DB misses
+    var cropPromises = nameArr.map(function(c, i){
+      if(dbHits.some(function(h){ return h.idx===i; })){
+        return Promise.resolve('__db__');
+      }
+      return runSingleCropScan(k, currentCardCrops[i], i);
+    });
+
+    return Promise.all(cropPromises).then(function(numberArr){
+      var merged = nameArr.map(function(c, i){
+        var dbHit = dbHits.find(function(h){ return h.idx===i; });
+        if(dbHit){
+          return dbHit.result;
+        }
+        return { name:c.name||'', set_name:c.set_name||'', card_number: numberArr[i]||'' };
+      });
+      var dbCount = dbHits.length;
+      var apiCount = missIndexes.length;
+      log('Scan done: '+dbCount+' from DB, '+apiCount+' from Claude in '+((Date.now()-t0)/1000).toFixed(1)+'s','ok');
+      return merged;
+    });
   }).then(function(arr){
     arr=applyCorrections(arr); foundCards=arr;
     // Auto-save all then show results for corrections
     autoSaveAll(arr);
     showResultsCards(arr);
+    // Only run TCG verify on cards NOT from DB
+    var toVerify = arr.filter(function(c){ return !c._fromDB; });
+    if(toVerify.length) tcgVerifyAll(toVerify);
     var elapsed = ((Date.now()-t0)/1000).toFixed(1);
-    toast(arr.length+' card'+(arr.length===1?'':'s')+' saved! ('+elapsed+'s)','success');
+    var dbCount = arr.filter(function(c){ return c._fromDB; }).length;
+    var msg = dbCount > 0
+      ? arr.length+' cards saved! ('+dbCount+' instant from memory, '+elapsed+'s)'
+      : arr.length+' card'+(arr.length===1?'':'s')+' saved! ('+elapsed+'s)';
+    toast(msg,'success');
   }).catch(function(e){
     log('Scan error: '+e.message,'e'); toast('Error: '+e.message,'error'); showResultsPlaceholder();
   }).finally(function(){btnScan.disabled=false;btnScan.textContent='⚡ Scan All Cards in Image';});
@@ -1005,6 +1149,198 @@ async function runScan(apiKey,b64,mime,cardCount){
 }
 
 // ── Upload results ────────────────────────────────────────────
+
+// ── Pokémon TCG API Verification ─────────────────────────────
+var TCG_API = 'https://api.pokemontcg.io/v2/cards';
+var tcgCache = {}; // cache by query string to avoid repeat calls
+
+function tcgQuery(params){
+  var key = JSON.stringify(params);
+  if(tcgCache[key]) return Promise.resolve(tcgCache[key]);
+  var qs = Object.keys(params).map(function(k){
+    return encodeURIComponent(k)+'='+encodeURIComponent(params[k]);
+  }).join('&');
+  return fetch(TCG_API+'?'+qs+'&pageSize=5')
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      tcgCache[key] = data.data || [];
+      return tcgCache[key];
+    });
+}
+
+// Normalise a card name for fuzzy matching
+function normName(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]/g,' ').replace(/\s+/g,' ').trim(); }
+
+// Check one card against TCG API, return suggestion or null
+function tcgVerifyCard(c){
+  var name = (c.name||'').trim();
+  var num  = (c.card_number||'').trim();
+  if(!name) return Promise.resolve(null); // nothing to work with
+
+  // Build query — escape special chars for TCG API lucene syntax
+  var safeName = name.replace(/[:"]/g,' ');
+
+  // Strategy 1: exact name + number
+  var p1 = num
+    ? tcgQuery({q:'name:"'+safeName+'" number:'+num.replace(/\/.*/,'')})
+    : Promise.resolve([]);
+
+  // Strategy 2: name only (broader)
+  var p2 = tcgQuery({q:'name:"'+safeName+'"'});
+
+  return Promise.all([p1, p2]).then(function(results){
+    var exactMatches = results[0];
+    var nameMatches  = results[1];
+    var allMatches   = exactMatches.length ? exactMatches : nameMatches;
+
+    if(!allMatches.length){
+      // Try fuzzy: first word of name only
+      var firstWord = safeName.split(' ')[0];
+      if(firstWord.length < 3) return null;
+      return tcgQuery({q:'name:"'+firstWord+'"'}).then(function(fuzzy){
+        if(!fuzzy.length) return null;
+        return buildSuggestion(c, fuzzy, false);
+      });
+    }
+    return buildSuggestion(c, allMatches, exactMatches.length > 0);
+  }).catch(function(e){
+    log('TCG API error: '+e.message,'w');
+    return null;
+  });
+}
+
+function buildSuggestion(c, matches, isExact){
+  if(!matches.length) return null;
+
+  var name = (c.name||'').trim();
+  var num  = (c.card_number||'').trim();
+
+  // Find best match by name similarity
+  var best = matches[0];
+  var bestScore = 0;
+  matches.forEach(function(m){
+    var score = 0;
+    if(normName(m.name) === normName(name)) score += 10;
+    else if(normName(m.name).indexOf(normName(name)) >= 0) score += 5;
+    if(num && m.number && m.number === num.replace(/\/.*/,'')) score += 8;
+    if(m.set && c.set_name && normName(m.set.name).indexOf(normName(c.set_name)) >= 0) score += 3;
+    if(score > bestScore){ bestScore = score; best = m; }
+  });
+
+  var sugName   = best.name || name;
+  var sugNum    = best.number + (best.set && best.set.printedTotal ? '/'+best.set.printedTotal : '');
+  var sugSet    = best.set ? best.set.name : (c.set_name||'');
+
+  // Determine what's different
+  var nameDiff  = normName(sugName) !== normName(name);
+  var numDiff   = num && sugNum && normName(sugNum) !== normName(num);
+  var numBlank  = !num && sugNum;
+  var setDiff   = !c.set_name && sugSet;
+
+  // Only suggest if something is actually different or blank
+  if(!nameDiff && !numDiff && !numBlank && !setDiff) return null;
+
+  var result = {
+    tcgId:   best.id,
+    name:    sugName,
+    number:  sugNum,
+    set:     sugSet,
+    nameDiff: nameDiff,
+    numDiff:  numDiff || numBlank,
+    setDiff:  setDiff,
+    confidence: isExact ? 'high' : 'low'
+  };
+  // Auto-learn high-confidence matches silently
+  if(isExact && sugName && sugNum){
+    learnDB(sugName, sugNum, sugSet, best.id, 'tcg-auto');
+    log('Auto-learned: '+sugName+' '+sugNum,'ok');
+  }
+  return result;
+}
+
+// Run TCG verification on all found cards, inject suggestions into UI
+function tcgVerifyAll(arr){
+  if(!arr.length) return;
+  log('TCG API: verifying '+arr.length+' cards…');
+
+  arr.forEach(function(c, i){
+    tcgVerifyCard(c).then(function(suggestion){
+      if(!suggestion) return;
+      log('TCG suggestion for "'+c.name+'": '+suggestion.name+' '+suggestion.number+' ('+suggestion.confidence+')','ok');
+      injectTcgSuggestion(i, suggestion);
+    });
+  });
+}
+
+function injectTcgSuggestion(idx, sug){
+  var card = document.getElementById('cr-'+idx);
+  if(!card) return; // results panel was cleared
+
+  // Remove any existing suggestion
+  var existing = card.querySelector('.tcg-suggestion');
+  if(existing) existing.remove();
+
+  var parts = [];
+  if(sug.nameDiff) parts.push('Name: <strong>'+esc(sug.name)+'</strong>');
+  if(sug.numDiff)  parts.push('Number: <strong>'+esc(sug.number)+'</strong>');
+  if(sug.setDiff)  parts.push('Set: <strong>'+esc(sug.set)+'</strong>');
+  if(!parts.length) return;
+
+  var confColor = sug.confidence === 'high' ? '#4caf50' : '#e86b2a';
+  var confLabel = sug.confidence === 'high' ? '● High confidence' : '◐ Low confidence';
+
+  var div = document.createElement('div');
+  div.className = 'tcg-suggestion';
+  div.style.cssText = 'margin-top:8px;padding:8px 10px;background:rgba(74,240,255,0.06);border:1px solid rgba(74,240,255,0.2);border-radius:8px;font-size:0.75rem;';
+  div.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">'+
+      '<span style="color:var(--accent);font-weight:600;">🔍 TCG Database suggests:</span>'+
+      '<span style="color:'+confColor+';font-size:0.68rem;">'+confLabel+'</span>'+
+    '</div>'+
+    '<div style="color:#ccc;margin-bottom:7px;">'+parts.join(' &nbsp;·&nbsp; ')+'</div>'+
+    '<div style="display:flex;gap:6px;">'+
+      '<button class="tcg-accept" style="flex:1;padding:5px 10px;border-radius:6px;border:none;background:rgba(74,240,255,0.15);color:var(--accent);font-size:0.75rem;font-weight:600;cursor:pointer;" '+
+        'data-idx="'+idx+'" data-name="'+esc(sug.name)+'" data-num="'+esc(sug.number)+'" data-set="'+esc(sug.set)+'">✓ Accept</button>'+
+      '<button class="tcg-ignore" style="padding:5px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:none;color:#666;font-size:0.75rem;cursor:pointer;" '+
+        'data-idx="'+idx+'">Ignore</button>'+
+    '</div>';
+
+  // Bind buttons
+  div.querySelector('.tcg-accept').onclick = function(){
+    var i   = parseInt(this.dataset.idx);
+    var nm  = this.dataset.name;
+    var num = this.dataset.num;
+    var st  = this.dataset.set;
+    // Apply to foundCards
+    if(foundCards[i]){
+      if(nm)  foundCards[i].name = nm;
+      if(num) foundCards[i].card_number = num;
+      if(st)  foundCards[i].set_name = st;
+      foundCards[i]._manualEdit = true;
+    }
+    // Update input fields
+    var cr = document.getElementById('cr-'+i);
+    if(cr){
+      var ni = cr.querySelector('[data-key="name"]');
+      var ki = cr.querySelector('[data-key="card_number"]');
+      var si = cr.querySelector('[data-key="set_name"]');
+      if(ni && nm)  ni.value = nm;
+      if(ki && num) ki.value = num;
+      if(si && st)  si.value = st;
+    }
+    // Save correction for future learning
+    if(nm && num) saveCorrection(nm, num, st);
+    // Re-save this card in collection
+    fixCard(i);
+    div.innerHTML = '<div style="color:#4caf50;font-size:0.75rem;padding:2px 0;">✓ Applied &amp; saved as correction</div>';
+  };
+  div.querySelector('.tcg-ignore').onclick = function(){
+    div.remove();
+  };
+
+  card.appendChild(div);
+}
+
 function showResultsPlaceholder(){
   resultsArea.innerHTML='<div class="results-placeholder"><span class="big">🃏</span>Upload a photo and hit Scan<br>Claude will detect every card in the image</div>';
 }
@@ -1017,7 +1353,8 @@ function showResultsCards(arr){
   arr.forEach(function(c,i){
     html+='<div class="card-result" id="cr-'+i+'">'+
       '<div><div class="cr-label">Full Name</div><input class="cr-input" data-idx="'+i+'" data-key="name" value="'+esc(c.name||'')+'" oninput="updateFound(this)"/></div>'+
-      '<div><div class="cr-label">Card Number</div><input class="cr-input'+(c._corrected?' corrected':'')+'" data-idx="'+i+'" data-key="card_number" value="'+esc(c.card_number||'')+'" oninput="updateFound(this)"/>'+(c._corrected?'<div class="corrected-badge">✦ from memory</div>':'')+'</div>'+
+      '<div><div class="cr-label">Card Number</div><input class="cr-input'+(c._corrected?' corrected':c._fromDB?' corrected':'')+'" data-idx="'+i+'" data-key="card_number" value="'+esc(c.card_number||'')+'" oninput="updateFound(this)"/>'+
+        (c._fromDB?'<div class="corrected-badge" style="color:#4caf50;">⚡ from memory'+(c._dbHits>1?' ('+c._dbHits+'x)':'')+'</div>':c._corrected?'<div class="corrected-badge">✦ correction</div>':'')+'</div>'+
       '<div><div class="cr-label">Set</div><input class="cr-input" data-idx="'+i+'" data-key="set_name" value="'+esc(c.set_name||'')+'" oninput="updateFound(this)"/></div>'+
       '<div class="cr-actions"><div class="cr-num">'+(i+1)+'</div>'+
         '<button class="btn-save-one auto-saved" onclick="fixCard('+i+')" title="Fix &amp; re-save this card">✎ Fix</button>'+
@@ -1284,9 +1621,74 @@ function mergeLiveResults(arr){
     document.getElementById('btn-live-save-all').style.display='block';
     document.getElementById('btn-live-clear').style.display='block';
     toast(added+' new card'+(added===1?'':'s')+' detected!','success');
+    // TCG verify newly added cards
+    arr.forEach(function(c){
+      if(!c._lid) return;
+      tcgVerifyCard(c).then(function(sug){
+        if(!sug) return;
+        log('TCG live suggestion for "'+c.name+'": '+sug.name+' '+sug.number,'ok');
+        injectTcgSuggestionLive(c._lid, c, sug);
+      });
+    });
   } else {
     toast('Cards already in list','');
   }
+}
+
+function injectTcgSuggestionLive(lid, c, sug){
+  var item = document.getElementById('lci-'+lid);
+  if(!item) return;
+  var existing = item.querySelector('.tcg-suggestion');
+  if(existing) existing.remove();
+
+  var parts = [];
+  if(sug.nameDiff) parts.push('Name: <strong>'+esc(sug.name)+'</strong>');
+  if(sug.numDiff)  parts.push('Number: <strong>'+esc(sug.number)+'</strong>');
+  if(sug.setDiff)  parts.push('Set: <strong>'+esc(sug.set)+'</strong>');
+  if(!parts.length) return;
+
+  var confColor = sug.confidence === 'high' ? '#4caf50' : '#e86b2a';
+  var confLabel = sug.confidence === 'high' ? '● High' : '◐ Low';
+
+  var div = document.createElement('div');
+  div.className = 'tcg-suggestion';
+  div.style.cssText = 'margin-top:8px;padding:7px 10px;background:rgba(74,240,255,0.06);border:1px solid rgba(74,240,255,0.2);border-radius:8px;font-size:0.73rem;';
+  div.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'+
+      '<span style="color:var(--accent);font-weight:600;">🔍 TCG suggests:</span>'+
+      '<span style="color:'+confColor+';font-size:0.68rem;">'+confLabel+'</span>'+
+    '</div>'+
+    '<div style="color:#ccc;margin-bottom:6px;">'+parts.join(' · ')+'</div>'+
+    '<div style="display:flex;gap:6px;">'+
+      '<button class="tcg-accept-live" style="flex:1;padding:4px 8px;border-radius:6px;border:none;background:rgba(74,240,255,0.15);color:var(--accent);font-size:0.72rem;font-weight:600;cursor:pointer;">✓ Accept</button>'+
+      '<button class="tcg-ignore-live" style="padding:4px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:none;color:#666;font-size:0.72rem;cursor:pointer;">Ignore</button>'+
+    '</div>';
+
+  div.querySelector('.tcg-accept-live').onclick = function(){
+    // Update liveCards entry
+    var lc = liveCards.find(function(x){ return x._lid == lid; });
+    if(lc){
+      if(sug.nameDiff) lc.name = sug.name;
+      if(sug.numDiff)  lc.card_number = sug.number;
+      if(sug.setDiff)  lc.set_name = sug.set;
+    }
+    // Update display
+    var nameEl = item.querySelector('.lci-name');
+    var metaEl = item.querySelector('.lci-meta');
+    if(nameEl && sug.nameDiff) nameEl.textContent = sug.name;
+    if(metaEl){
+      metaEl.innerHTML =
+        (sug.number?'<span>'+esc(sug.number)+'</span>':'<span style="color:var(--muted)">No number</span>')+
+        (sug.set?' &nbsp;·&nbsp; <span>'+esc(sug.set)+'</span>':'');
+    }
+    // Save correction + re-save card
+    if(sug.name && sug.number) saveCorrection(sug.name, sug.number, sug.set);
+    if(lc) liveAutoSave(lc);
+    div.innerHTML = '<div style="color:#4caf50;font-size:0.72rem;">✓ Applied &amp; saved</div>';
+  };
+  div.querySelector('.tcg-ignore-live').onclick = function(){ div.remove(); };
+
+  item.appendChild(div);
 }
 
 function prependLiveCard(c){
@@ -1403,6 +1805,8 @@ function saveCorrection(name, card_number, set_name){
   localStorage.setItem('pokescan_corrections', JSON.stringify(corrections));
   renderCorrections();
   log('Correction saved: '+name+' = '+card_number,'ok');
+  // Also persist to learned DB
+  learnDB(name, card_number, set_name, '', 'correction');
 }
 
 function updateAllCorrections(){
@@ -1632,6 +2036,7 @@ function processIphoneImage(b64, mime, cardCount){
       autoSaveAll(merged);
       foundCards=merged;
       showResultsCards(merged);
+      tcgVerifyAll(merged);
       var elapsed=((Date.now()-t0)/1000).toFixed(1);
       toast('📱 '+merged.length+' card'+(merged.length===1?'':'s')+' scanned! ('+elapsed+'s)','success');
       document.getElementById('iphone-status-lbl').textContent = 'Listening…';
@@ -1649,6 +2054,62 @@ function processIphoneImage(b64, mime, cardCount){
   };
   img.src = 'data:'+mime+';base64,'+b64;
 }
+
+// ── Learned DB UI ─────────────────────────────────────────────
+function toggleLearnedDBPanel(){
+  var body = document.getElementById('learneddb-body');
+  var chevron = document.getElementById('learneddb-chevron');
+  var open = body.style.display === 'block';
+  body.style.display = open ? 'none' : 'block';
+  chevron.textContent = open ? '▼' : '▲';
+  if(!open) renderLearnedDBStats();
+}
+
+function renderLearnedDBStats(){
+  var keys = Object.keys(learnedDB);
+  var lbl = document.getElementById('learneddb-count-lbl');
+  if(lbl) lbl.textContent = keys.length+' cards';
+  var stats = document.getElementById('learneddb-stats');
+  if(!stats) return;
+  if(!keys.length){ stats.innerHTML = '<em>No cards learned yet. Scan some cards to build the DB.</em>'; return; }
+
+  // Sort by last_seen desc, show top 10
+  var sorted = keys.map(function(k){ return learnedDB[k]; })
+    .sort(function(a,b){ return (b.last_seen||0)-(a.last_seen||0); });
+
+  var sources = {};
+  sorted.forEach(function(c){ sources[c.source||'tcg'] = (sources[c.source||'tcg']||0)+1; });
+  var srcSummary = Object.keys(sources).map(function(s){ return sources[s]+' from '+s; }).join(', ');
+
+  var topHtml = sorted.slice(0,8).map(function(c){
+    return '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05);">'+
+      '<span style="color:#ccc;">'+esc(c.name)+'</span>'+
+      '<span style="color:var(--accent);">'+esc(c.card_number)+'</span>'+
+      '<span style="color:#555;font-size:0.68rem;">×'+( c.hits||1)+'</span>'+
+    '</div>';
+  }).join('');
+
+  stats.innerHTML =
+    '<div style="margin-bottom:8px;color:#888;">'+keys.length+' total · '+srcSummary+'</div>'+
+    '<div style="font-size:0.72rem;">Recent:</div>'+
+    topHtml+
+    (sorted.length>8?'<div style="color:#555;font-size:0.7rem;margin-top:4px;">…and '+(sorted.length-8)+' more</div>':'');
+}
+
+function clearLearnedDB(){
+  if(!Object.keys(learnedDB).length) return;
+  if(!confirm('Clear all '+Object.keys(learnedDB).length+' learned cards? This cannot be undone.')) return;
+  learnedDB = {};
+  localStorage.setItem('pokescan_learneddb', '{}');
+  renderLearnedDBStats();
+  toast('Learned DB cleared');
+}
+
+// Update count label on load
+(function(){ 
+  var lbl = document.getElementById('learneddb-count-lbl');
+  if(lbl) lbl.textContent = Object.keys(learnedDB).length+' cards';
+})();
 
 // ── Collection ────────────────────────────────────────────────
 function renderTable(){
@@ -1673,15 +2134,178 @@ document.getElementById('btn-csv').onclick=function(){
   dl(new Blob([csv],{type:'text/csv'}),'pokemon_collection.csv');
   toast('CSV downloaded!','success');
 };
-document.getElementById('btn-sheets').onclick=function(){
+// ── Google Sheets OAuth Export ────────────────────────────────
+var GOOG_CLIENT_ID = localStorage.getItem('pokescan_gclient') || '';
+var gAccessToken = null, gTokenExpiry = 0;
+var savedSheets = JSON.parse(localStorage.getItem('pokescan_sheets')||'[]');
+
+document.getElementById('btn-sheets').onclick = function(){
   if(!cards.length){toast('Nothing to export','error');return;}
-  var rows=[['Full Name','Card Number','Set','QTY','Notes','Date Scanned']];
-  cards.forEach(function(c){rows.push([c.name||'',c.card_number||'',c.set_name||'',c.qty||1,c.notes||'',c.date_scanned||'']);});
-  var tsv=rows.map(function(r){return r.join('\t');}).join('\n');
-  navigator.clipboard.writeText(tsv).then(function(){
-    window.open('https://sheets.new','_blank'); toast('Copied! Paste into Sheets (Ctrl+V)','success');
-  }).catch(function(){dl(new Blob([tsv],{type:'text/plain'}),'pokemon_collection.tsv');toast('TSV downloaded');});
+  openSheetsModal();
 };
+
+function openSheetsModal(){
+  document.getElementById('sheets-modal').style.display='flex';
+  renderSheetsModal();
+}
+function closeSheetsModal(){
+  document.getElementById('sheets-modal').style.display='none';
+}
+
+function renderSheetsModal(){
+  var body = document.getElementById('sheets-modal-body');
+  if(!GOOG_CLIENT_ID){
+    body.innerHTML =
+      '<div style="color:#aaa;font-size:0.82rem;margin-bottom:14px;">Enter your Google OAuth Client ID to enable direct Sheets export.</div>'+
+      '<input id="gclient-input" placeholder="xxxx.apps.googleusercontent.com" style="width:100%;padding:10px 12px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.2);border-radius:8px;color:#fff;font-size:0.85rem;margin-bottom:12px;" value="'+esc(GOOG_CLIENT_ID)+'"/>'+
+      '<button onclick="saveGClientId()" style="width:100%;padding:11px;border-radius:8px;border:none;background:#e86b2a;color:#fff;font-size:0.9rem;font-weight:600;cursor:pointer;">Save & Continue</button>';
+    return;
+  }
+  var sheetsHtml = savedSheets.length ?
+    '<div style="color:#aaa;font-size:0.75rem;margin-bottom:8px;">Recent sheets:</div>'+
+    savedSheets.map(function(s,i){
+      return '<div style="display:flex;gap:8px;margin-bottom:7px;">'+
+        '<button data-sid="'+s.id+'" data-sname="'+esc(s.name)+'" onclick="exportToSheet(this.dataset.sid,this.dataset.sname)" style="flex:1;text-align:left;padding:9px 12px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#fff;font-size:0.82rem;cursor:pointer;">📄 '+esc(s.name)+'</button>'+
+        '<button onclick="removeSheet('+i+')" style="padding:9px 12px;background:none;border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#666;cursor:pointer;font-size:0.75rem;">✕</button>'+
+      '</div>';
+    }).join('') : '';
+  body.innerHTML =
+    sheetsHtml +
+    '<div style="color:#aaa;font-size:0.75rem;margin-bottom:6px;margin-top:'+(savedSheets.length?'12':'0')+'px;">Create new sheet:</div>'+
+    '<div style="display:flex;gap:8px;margin-bottom:12px;">'+
+      '<input id="new-sheet-name" placeholder="Sheet name (e.g. My Pokemon Cards)" style="flex:1;padding:9px 12px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.2);border-radius:8px;color:#fff;font-size:0.82rem;" value="Pokemon Collection '+new Date().toLocaleDateString()+'"/>'+
+      '<button onclick="createAndExport()" style="padding:9px 14px;border-radius:8px;border:none;background:#4caf50;color:#fff;font-size:0.85rem;font-weight:600;cursor:pointer;">＋ Create</button>'+
+    '</div>'+
+    '<div style="border-top:1px solid rgba(255,255,255,0.08);padding-top:12px;display:flex;justify-content:space-between;align-items:center;">'+
+      '<button onclick="showClientIdInput()" style="background:none;border:none;color:#555;font-size:0.72rem;cursor:pointer;">⚙ Change Client ID</button>'+
+      (gAccessToken && Date.now()<gTokenExpiry ? '<span style="color:#4caf50;font-size:0.72rem;">● Signed in</span>' : '<button onclick="signInGoogle(renderSheetsModal)" style="padding:6px 14px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);background:none;color:#aaa;font-size:0.78rem;cursor:pointer;">Sign in with Google</button>')+
+    '</div>';
+}
+
+function saveGClientId(){
+  var v = document.getElementById('gclient-input').value.trim();
+  if(!v){toast('Enter a Client ID','error');return;}
+  GOOG_CLIENT_ID = v;
+  localStorage.setItem('pokescan_gclient', v);
+  renderSheetsModal();
+}
+
+function showClientIdInput(){
+  GOOG_CLIENT_ID = '';
+  renderSheetsModal();
+}
+
+function removeSheet(i){
+  savedSheets.splice(i,1);
+  localStorage.setItem('pokescan_sheets', JSON.stringify(savedSheets));
+  renderSheetsModal();
+}
+
+function signInGoogle(cb){
+  if(!GOOG_CLIENT_ID){toast('Enter Client ID first','error');return;}
+  var client = google.accounts.oauth2.initTokenClient({
+    client_id: GOOG_CLIENT_ID,
+    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    callback: function(resp){
+      if(resp.error){ toast('Sign in failed: '+resp.error,'error'); return; }
+      gAccessToken = resp.access_token;
+      gTokenExpiry = Date.now() + (resp.expires_in - 60) * 1000;
+      log('Google signed in, token valid for '+resp.expires_in+'s','ok');
+      if(cb) cb();
+    }
+  });
+  client.requestAccessToken();
+}
+
+function ensureSignedIn(cb){
+  if(gAccessToken && Date.now() < gTokenExpiry){ cb(); return; }
+  signInGoogle(cb);
+}
+
+function createAndExport(){
+  var name = (document.getElementById('new-sheet-name')||{}).value || 'Pokemon Collection';
+  if(!name.trim()){ toast('Enter a sheet name','error'); return; }
+  ensureSignedIn(function(){
+    document.getElementById('sheets-modal-body').innerHTML =
+      '<div style="text-align:center;padding:20px;color:#aaa;">Creating sheet…</div>';
+    // Create new spreadsheet
+    fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+      method:'POST',
+      headers:{'Authorization':'Bearer '+gAccessToken,'Content-Type':'application/json'},
+      body:JSON.stringify({properties:{title:name}})
+    }).then(function(r){return r.json();}).then(function(data){
+      if(data.error) throw new Error(data.error.message);
+      var sheetId = data.spreadsheetId;
+      // Save to recent list
+      savedSheets.unshift({id:sheetId, name:name});
+      if(savedSheets.length>5) savedSheets.pop();
+      localStorage.setItem('pokescan_sheets', JSON.stringify(savedSheets));
+      log('Created sheet: '+sheetId,'ok');
+      return writeToSheet(sheetId, true);
+    }).then(function(sheetId){
+      toast('✅ Exported to Google Sheets!','success');
+      closeSheetsModal();
+      // Open the sheet
+      window.open('https://docs.google.com/spreadsheets/d/'+sheetId+'/edit','_blank');
+    }).catch(function(e){
+      toast('Error: '+e.message,'error');
+      log('Sheets error: '+e.message,'e');
+      renderSheetsModal();
+    });
+  });
+}
+
+function exportToSheet(sheetId, sheetName){
+  ensureSignedIn(function(){
+    document.getElementById('sheets-modal-body').innerHTML =
+      '<div style="text-align:center;padding:20px;color:#aaa;">Exporting to '+esc(sheetName)+'…</div>';
+    writeToSheet(sheetId, false).then(function(){
+      toast('✅ Exported to '+sheetName+'!','success');
+      closeSheetsModal();
+      window.open('https://docs.google.com/spreadsheets/d/'+sheetId+'/edit','_blank');
+    }).catch(function(e){
+      toast('Error: '+e.message,'error');
+      log('Sheets error: '+e.message,'e');
+      renderSheetsModal();
+    });
+  });
+}
+
+function writeToSheet(sheetId, isNew){
+  var headers = ['Full Name','Card Number','Set','QTY','Notes','Date Scanned'];
+  var rows = cards.map(function(c){
+    return [c.name||'',c.card_number||'',c.set_name||'',c.qty||1,c.notes||'',c.date_scanned||''];
+  });
+
+  var writeData;
+  if(isNew){
+    // New sheet: write headers + all data from row 1
+    writeData = [headers].concat(rows);
+  } else {
+    // Existing sheet: append after last row (no headers)
+    writeData = rows;
+  }
+
+  var values = writeData.map(function(row){
+    return row.map(function(v){ return String(v); });
+  });
+
+  var range = isNew ? 'Sheet1!A1' : 'Sheet1!A1';
+  var url = isNew
+    ? 'https://sheets.googleapis.com/v4/spreadsheets/'+sheetId+'/values/Sheet1!A1?valueInputOption=RAW'
+    : 'https://sheets.googleapis.com/v4/spreadsheets/'+sheetId+'/values/Sheet1!A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS';
+
+  return fetch(url, {
+    method: isNew ? 'PUT' : 'POST',
+    headers:{'Authorization':'Bearer '+gAccessToken,'Content-Type':'application/json'},
+    body:JSON.stringify({range:'Sheet1!A1', majorDimension:'ROWS', values:values})
+  }).then(function(r){return r.json();}).then(function(data){
+    if(data.error) throw new Error(data.error.message);
+    log('Wrote '+values.length+' rows to sheet '+sheetId,'ok');
+    return sheetId;
+  });
+}
+
 document.getElementById('btn-clr-table').onclick=function(){
   if(!cards.length)return;
   if(!confirm('Remove all '+cards.length+' card(s)?'))return;
