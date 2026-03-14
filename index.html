@@ -87,12 +87,40 @@
   .cam-status-lbl{font-size:0.63rem;color:rgba(255,255,255,0.7);letter-spacing:1px;margin-left:7px;flex:1;}
   .cam-countdown{font-size:0.63rem;color:rgba(255,255,255,0.4);font-family:'Courier New',monospace;}
 
-  .cam-reticle{position:absolute;inset:8%;pointer-events:none;}
-  .cam-reticle::before,.cam-reticle::after,.cam-reticle span::before,.cam-reticle span::after{content:'';position:absolute;width:18px;height:18px;border-color:rgba(255,215,0,0.6);border-style:solid;}
-  .cam-reticle::before{top:0;left:0;border-width:2px 0 0 2px;border-radius:3px 0 0 0;}
-  .cam-reticle::after{top:0;right:0;border-width:2px 2px 0 0;border-radius:0 3px 0 0;}
-  .cam-reticle span::before{bottom:0;left:0;border-width:0 0 2px 2px;border-radius:0 0 0 3px;}
-  .cam-reticle span::after{bottom:0;right:0;border-width:0 2px 2px 0;border-radius:0 0 3px 0;}
+  /* Reticle: card-shaped portrait box centered in video */
+  .cam-reticle{
+    position:absolute;
+    /* Pokemon card ratio 2.5:3.5 = 5:7. Box is 55% of width, centered */
+    width:55%;
+    aspect-ratio:5/7;
+    top:50%; left:50%;
+    transform:translate(-50%,-50%);
+    pointer-events:none;
+    border:2px solid rgba(255,215,0,0.0); /* invisible fill */
+    border-radius:6px;
+  }
+  .cam-reticle::before,.cam-reticle::after,.cam-reticle span::before,.cam-reticle span::after{content:'';position:absolute;width:22px;height:22px;border-color:rgba(255,215,0,0.85);border-style:solid;}
+  .cam-reticle::before{top:-1px;left:-1px;border-width:3px 0 0 3px;border-radius:4px 0 0 0;}
+  .cam-reticle::after{top:-1px;right:-1px;border-width:3px 3px 0 0;border-radius:0 4px 0 0;}
+  .cam-reticle span::before{bottom:-1px;left:-1px;border-width:0 0 3px 3px;border-radius:0 0 0 4px;}
+  .cam-reticle span::after{bottom:-1px;right:-1px;border-width:0 3px 3px 0;border-radius:0 0 4px 0;}
+  /* Dim everything outside reticle */
+  .cam-reticle-shade{position:absolute;inset:0;pointer-events:none;background:rgba(0,0,0,0.45);}
+  .cam-reticle-shade::after{
+    content:'';position:absolute;
+    width:55%;aspect-ratio:5/7;
+    top:50%;left:50%;transform:translate(-50%,-50%);
+    background:transparent;
+    box-shadow:0 0 0 1000px rgba(0,0,0,0.45);
+    border-radius:6px;
+  }
+  /* Auto-scan controls */
+  .auto-scan-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;}
+  .auto-scan-toggle{padding:8px 14px;border-radius:8px;border:1px solid rgba(255,215,0,0.3);background:rgba(255,215,0,0.06);color:var(--yellow);font-size:0.78rem;font-weight:600;cursor:pointer;font-family:inherit;transition:all 0.2s;}
+  .auto-scan-toggle.active{background:rgba(255,215,0,0.18);border-color:rgba(255,215,0,0.6);}
+  .interval-pill{padding:6px 11px;border-radius:20px;border:1px solid var(--border);background:rgba(255,255,255,0.04);color:var(--muted);font-size:0.72rem;cursor:pointer;font-family:inherit;transition:all 0.2s;}
+  .interval-pill.active{background:rgba(255,215,0,0.1);border-color:rgba(255,215,0,0.35);color:var(--yellow);}
+  #cam-countdown{font-size:0.72rem;color:var(--yellow);margin-left:auto;font-family:'Courier New',monospace;}
 
   /* Camera controls row */
   .cam-controls-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
@@ -285,11 +313,21 @@
       <div id="live-view">
         <div class="cam-video-wrap">
           <video id="cam-video" autoplay playsinline muted></video>
+          <div class="cam-reticle-shade"></div>
           <div class="cam-reticle"><span></span></div>
           <div class="cam-status-bar">
             <div class="cam-status-dot idle" id="cam-dot"></div>
             <span class="cam-status-lbl" id="cam-status-lbl">Ready</span>
+            <span id="cam-countdown"></span>
           </div>
+        </div>
+
+        <!-- Auto-scan controls -->
+        <div class="auto-scan-row">
+          <button id="btn-auto-toggle" class="auto-scan-toggle" onclick="toggleAutoScan()">⏱ Auto-scan</button>
+          <button class="interval-pill active" data-sec="5" onclick="setIntervalSec(this)">5s</button>
+          <button class="interval-pill" data-sec="10" onclick="setIntervalSec(this)">10s</button>
+          <button class="interval-pill" data-sec="30" onclick="setIntervalSec(this)">30s</button>
         </div>
 
         <!-- Frozen frame preview -->
@@ -298,15 +336,8 @@
           <div style="position:absolute;top:6px;left:8px;background:rgba(0,0,0,0.7);color:#fff;font-size:0.7rem;padding:3px 8px;border-radius:20px;">📷 Scanning…</div>
         </div>
 
-        <!-- Card count + scan button -->
-        <div class="card-count-row" style="margin-top:10px;">
-          <span class="ccount-lbl">Cards in frame:</span>
-          <button class="count-btn active" data-n="1" onclick="setCardCount(this,'camera')">1</button>
-          <button class="count-btn" data-n="2" onclick="setCardCount(this,'camera')">2</button>
-          <button class="count-btn" data-n="4" onclick="setCardCount(this,'camera')">4</button>
-        </div>
         <div style="display:flex;gap:8px;margin-top:10px;">
-          <button id="btn-capture-now" onclick="freezeAndScan()" style="flex:1;font-size:1.1rem;padding:14px;">📸 Scan Cards</button>
+          <button id="btn-capture-now" onclick="freezeAndScan()" style="flex:1;font-size:1.1rem;padding:14px;">📸 Scan Card</button>
           <button id="btn-live-stop" onclick="stopLive()" style="padding:14px 16px;background:rgba(255,255,255,0.07);border:1px solid var(--border);border-radius:10px;color:var(--muted);cursor:pointer;font-size:0.85rem;">■ Stop</button>
         </div>
       </div>
@@ -515,6 +546,8 @@ var currentB64 = null, currentStripB64 = null, currentCardCrops = [], currentMim
 var iPhonePolling = false, iPhonePollTimer = null;
 var camStream = null, liveScanning = false;
 var liveCards = [];
+var autoScanOn = false, autoScanSec = 5, autoScanTimer = null, autoScanCountdown = 0;
+var lastPHash = null; // perceptual hash of last scanned reticle crop
 var snapCanvas = document.createElement('canvas');
 var uploadCardCount = 0; // 0 = auto
 var cameraCardCount = 0;
@@ -1433,9 +1466,10 @@ function startLive(){
       camStream=stream; camVideo.srcObject=stream;
       document.getElementById('cam-pre').style.display='none';
       document.getElementById('live-view').classList.add('active');
-      setLiveStatus('idle','Ready');
+      setLiveStatus('idle','Ready — place card in frame');
       log('Camera: '+stream.getVideoTracks()[0].label,'ok');
       toast('Camera ready!','success');
+      lastPHash = null;
     })
     .catch(function(err){
       log('Camera error: '+err.name+' '+err.message,'e');
@@ -1446,7 +1480,12 @@ function startLive(){
 }
 
 function stopLive(){
-  clearInterval(liveCountTimer); liveCountTimer=null; liveScanning=false;
+  // Stop auto-scan
+  clearInterval(autoScanTimer); autoScanTimer=null; autoScanOn=false;
+  var btn=document.getElementById('btn-auto-toggle');
+  if(btn){btn.classList.remove('active');btn.textContent='⏱ Auto-scan';}
+  var cd=document.getElementById('cam-countdown'); if(cd) cd.textContent='';
+  liveScanning=false; lastPHash=null;
   if(camStream){camStream.getTracks().forEach(function(t){t.stop();});camStream=null;}
   camVideo.srcObject=null;
   document.getElementById('cam-pre').style.display='';
@@ -1455,44 +1494,141 @@ function stopLive(){
   log('Camera stopped');
 }
 
-// (auto-interval removed)
+// ── Auto-scan + interval ──────────────────────────────────────
+function toggleAutoScan(){
+  autoScanOn = !autoScanOn;
+  var btn = document.getElementById('btn-auto-toggle');
+  if(autoScanOn){
+    btn.classList.add('active');
+    btn.textContent = '⏱ Auto ON';
+    startAutoTimer();
+    log('Auto-scan ON every '+autoScanSec+'s','ok');
+  } else {
+    btn.classList.remove('active');
+    btn.textContent = '⏱ Auto-scan';
+    clearInterval(autoScanTimer); autoScanTimer=null;
+    var cd = document.getElementById('cam-countdown');
+    if(cd) cd.textContent='';
+    log('Auto-scan OFF');
+  }
+}
+
+function setIntervalSec(btn){
+  autoScanSec = parseInt(btn.dataset.sec);
+  document.querySelectorAll('.interval-pill').forEach(function(b){b.classList.remove('active');});
+  btn.classList.add('active');
+  if(autoScanOn){ clearInterval(autoScanTimer); startAutoTimer(); }
+  log('Interval set to '+autoScanSec+'s');
+}
+
+function startAutoTimer(){
+  clearInterval(autoScanTimer);
+  autoScanCountdown = autoScanSec;
+  var cd = document.getElementById('cam-countdown');
+  autoScanTimer = setInterval(function(){
+    if(!camStream || !autoScanOn){ clearInterval(autoScanTimer); return; }
+    if(liveScanning){ if(cd) cd.textContent='scanning…'; return; }
+    autoScanCountdown--;
+    if(cd) cd.textContent = autoScanCountdown+'s';
+    if(autoScanCountdown <= 0){
+      autoScanCountdown = autoScanSec;
+      freezeAndScan();
+    }
+  }, 1000);
+}
+
+// ── Perceptual hash of reticle crop ───────────────────────────
+// Downsample to 8x8 grayscale, compare average — fast & good enough
+function computePHash(canvas, rx, ry, rw, rh){
+  var sz = 8;
+  var tmp = document.createElement('canvas'); tmp.width=sz; tmp.height=sz;
+  var ctx = tmp.getContext('2d');
+  ctx.drawImage(canvas, rx, ry, rw, rh, 0, 0, sz, sz);
+  var d = ctx.getImageData(0,0,sz,sz).data;
+  var sum=0, pixels=[];
+  for(var i=0;i<d.length;i+=4){
+    var g = 0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+    pixels.push(g); sum+=g;
+  }
+  var avg = sum/pixels.length;
+  return pixels.map(function(v){ return v>=avg?1:0; }).join('');
+}
+
+function hashDiff(h1, h2){
+  if(!h1||!h2||h1.length!==h2.length) return 64;
+  var diff=0; for(var i=0;i<h1.length;i++) if(h1[i]!==h2[i]) diff++;
+  return diff;
+}
+
+// ── Get reticle bounds on video canvas ────────────────────────
+function getReticleBounds(vw, vh){
+  // Reticle = 55% of video width, card aspect 5:7, centered
+  var rw = Math.round(vw * 0.55);
+  var rh = Math.round(rw * 7/5);
+  // Clamp height
+  if(rh > vh * 0.92){ rh = Math.round(vh*0.92); rw = Math.round(rh*5/7); }
+  var rx = Math.round((vw-rw)/2);
+  var ry = Math.round((vh-rh)/2);
+  return {rx:rx, ry:ry, rw:rw, rh:rh};
+}
 
 var frozenB64 = null;
 var freezeCanvas = null;
 
 function freezeAndScan(){
-  if(liveScanning){toast('Already scanning…');return;}
+  if(liveScanning){return;}
   if(!camStream){toast('Start camera first','error');return;}
   var vw=camVideo.videoWidth, vh=camVideo.videoHeight;
   if(!vw||!vh||vw<100){toast('Camera still starting…');return;}
 
-  // Capture full frame at high resolution
+  // Capture full-res frame into a temp canvas
+  var fullCanvas = document.createElement('canvas');
+  fullCanvas.width=vw; fullCanvas.height=vh;
+  fullCanvas.getContext('2d').drawImage(camVideo,0,0,vw,vh);
+
+  // Compute reticle bounds and crop to it
+  var b = getReticleBounds(vw, vh);
+
+  // Perceptual hash check — skip if same card still in frame
+  var phash = computePHash(fullCanvas, b.rx, b.ry, b.rw, b.rh);
+  var diff = hashDiff(phash, lastPHash);
+  log('pHash diff: '+diff, diff<10?'w':'ok');
+  if(diff < 10 && lastPHash !== null){
+    // Same card — update countdown but don't scan
+    if(autoScanOn){
+      var cd = document.getElementById('cam-countdown');
+      if(cd) cd.textContent = '—'; // signal: waiting for new card
+    }
+    log('Duplicate frame skipped (diff='+diff+')','w');
+    return;
+  }
+  lastPHash = phash;
+
+  // Crop to reticle region, upscale to decent resolution for Claude
   freezeCanvas = document.getElementById('freeze-canvas');
-  var maxW = 1400, scale = Math.min(1, maxW/vw);
-  var dw = Math.round(vw*scale), dh = Math.round(vh*scale);
-  freezeCanvas.width=dw; freezeCanvas.height=dh;
-  freezeCanvas.getContext('2d').drawImage(camVideo,0,0,dw,dh);
+  var targetW = Math.max(b.rw, 900);
+  var scale = targetW / b.rw;
+  freezeCanvas.width  = Math.round(b.rw*scale);
+  freezeCanvas.height = Math.round(b.rh*scale);
+  freezeCanvas.getContext('2d').drawImage(fullCanvas, b.rx, b.ry, b.rw, b.rh, 0, 0, freezeCanvas.width, freezeCanvas.height);
 
   // Show frozen preview
   document.getElementById('freeze-preview-wrap').style.display='block';
-  camVideo.style.display='none';
 
-  var dataUrl=freezeCanvas.toDataURL('image/jpeg',0.88);
-  frozenB64=dataUrl.split(',')[1];
-  if(frozenB64.length>3500000){
-    frozenB64=freezeCanvas.toDataURL('image/jpeg',0.65).split(',')[1];
-  }
-  log('Frozen frame: '+dw+'x'+dh+' b64='+frozenB64.length,'ok');
+  var q = 0.90;
+  frozenB64 = freezeCanvas.toDataURL('image/jpeg', q).split(',')[1];
+  if(frozenB64.length > 3000000) frozenB64 = freezeCanvas.toDataURL('image/jpeg', 0.70).split(',')[1];
+
+  log('Reticle crop: '+b.rw+'x'+b.rh+' → '+freezeCanvas.width+'x'+freezeCanvas.height+' b64='+frozenB64.length,'ok');
   triggerLiveScan(frozenB64);
 }
 
 function unfreeze(){
   frozenB64=null;
   document.getElementById('freeze-preview-wrap').style.display='none';
-  camVideo.style.display='block';
   if(!liveScanning){
     btnCapture.disabled=false;
-    btnCapture.textContent='📸 Freeze & Scan';
+    btnCapture.textContent='📸 Scan Card';
   }
 }
 
@@ -1506,26 +1642,17 @@ function triggerLiveScan(b64){
   btnCapture.textContent='⏳ Scanning…';
   setLiveStatus('scanning','Scanning…');
 
-  // Two-pass: names + per-card crops in parallel (same as upload)
-  var cardCount = cameraCardCount||1;
-  // Generate card crops from frozen frame
+  // Single card from reticle — full image IS the card, just crop bottom 30% for number
+  var cardCount = 1;
   var crops = [];
   if(freezeCanvas){
     var dw=freezeCanvas.width, dh=freezeCanvas.height;
-    var numRows=(dh>dw*1.2)?2:1;
-    var numCols=cardCount>2?2:1;
-    var rowH=Math.round(dh/numRows), colW=Math.round(dw/numCols);
-    var botH=Math.round(rowH*0.30);
-    var cropScale=Math.min(5,900/colW);
-    var ccw=Math.round(colW*cropScale), cch=Math.round(botH*cropScale);
-    for(var row=0;row<numRows;row++){
-      for(var col=0;col<numCols;col++){
-        var cc=document.createElement('canvas');
-        cc.width=ccw; cc.height=cch;
-        cc.getContext('2d').drawImage(freezeCanvas,col*colW,(row+1)*rowH-botH,colW,botH,0,0,ccw,cch);
-        crops.push(cc.toDataURL('image/jpeg',0.92).split(',')[1]);
-      }
-    }
+    var botH=Math.round(dh*0.30);
+    var cropScale=Math.min(5,900/dw);
+    var ccw=Math.round(dw*cropScale), cch=Math.round(botH*cropScale);
+    var cc=document.createElement('canvas'); cc.width=ccw; cc.height=cch;
+    cc.getContext('2d').drawImage(freezeCanvas,0,dh-botH,dw,botH,0,0,ccw,cch);
+    crops.push(cc.toDataURL('image/jpeg',0.92).split(',')[1]);
   }
 
   var namePromise=runScan(k,b64,'image/jpeg',cardCount);
@@ -1547,7 +1674,9 @@ function triggerLiveScan(b64){
     tcgVerifyAll(merged);
     // Switch to upload tab so user sees results
     switchTab('upload');
-    toast(merged.length+' card'+(merged.length===1?'':'s')+' saved!','success');
+    // Reset hash so placing same card back triggers a re-scan
+    lastPHash = null;
+    toast(merged.length+' card'+(merged.length===1?'':'s')+' saved! Place next card in frame.','success');
   }).catch(function(e){
     log('Live scan err: '+e.message,'e');
     setLiveStatus('err',e.message.substring(0,40));
