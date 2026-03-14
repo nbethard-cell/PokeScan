@@ -71,8 +71,7 @@
   .cam-hint-pre{font-size:0.7rem;color:var(--muted);margin-top:10px;line-height:1.7;}
 
   #live-view{display:none;}
-  #live-view.active{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
-  @media(max-width:680px){#live-view.active{grid-template-columns:1fr;}}
+  #live-view.active{display:block;}
 
   .cam-left{display:flex;flex-direction:column;gap:10px;}
   .cam-video-wrap{position:relative;background:#000;border-radius:12px;overflow:hidden;border:1px solid var(--border);}
@@ -279,46 +278,36 @@
     <!-- Camera tab -->
     <div class="tab-body" id="body-camera">
       <div id="cam-pre" class="cam-start-screen">
-        <button id="btn-cam-start" onclick="startLive()">🎥 Start Live Camera</button>
-        <div class="cam-hint-pre">Point your camera at one or many cards<br>Hit the Scan button to extract info</div>
+        <button id="btn-cam-start" onclick="startLive()">🎥 Start Camera</button>
+        <div class="cam-hint-pre">Point your camera at cards and hit Scan<br>Results go straight into your collection</div>
       </div>
 
       <div id="live-view">
-        <div class="cam-left">
-          <div class="cam-video-wrap">
-            <video id="cam-video" autoplay playsinline muted></video>
-            <div class="cam-reticle"><span></span></div>
-            <div class="cam-status-bar">
-              <div class="cam-status-dot idle" id="cam-dot"></div>
-              <span class="cam-status-lbl" id="cam-status-lbl">Ready</span>
-              <span class="cam-countdown" id="cam-countdown"></span>
-            </div>
-          </div>
-
-          <!-- Freeze + Scan button -->
-          <div style="display:flex;gap:8px;margin-top:8px;">
-            <button id="btn-capture-now" onclick="freezeAndScan()" style="flex:1;font-size:1.1rem;padding:14px;">📸 Freeze &amp; Scan</button>
-            <button id="btn-live-stop" onclick="stopLive()" style="padding:14px 16px;background:rgba(255,255,255,0.07);border:1px solid var(--border);border-radius:10px;color:var(--muted);cursor:pointer;font-size:0.85rem;">■ Stop</button>
-          </div>
-          <!-- Frozen frame preview -->
-          <div id="freeze-preview-wrap" style="display:none;margin-top:8px;position:relative;">
-            <canvas id="freeze-canvas" style="width:100%;border-radius:10px;border:2px solid var(--accent);"></canvas>
-            <div style="position:absolute;top:6px;left:8px;background:rgba(0,0,0,0.7);color:#fff;font-size:0.7rem;padding:3px 8px;border-radius:20px;">📷 Frozen — scanning…</div>
-            <button onclick="unfreeze()" style="position:absolute;top:6px;right:8px;background:rgba(0,0,0,0.7);color:#fff;border:none;border-radius:20px;padding:3px 10px;font-size:0.7rem;cursor:pointer;">✕ Discard</button>
+        <div class="cam-video-wrap">
+          <video id="cam-video" autoplay playsinline muted></video>
+          <div class="cam-reticle"><span></span></div>
+          <div class="cam-status-bar">
+            <div class="cam-status-dot idle" id="cam-dot"></div>
+            <span class="cam-status-lbl" id="cam-status-lbl">Ready</span>
           </div>
         </div>
 
-        <div class="cam-right">
-          <div class="live-results-header">
-            <span class="live-results-title">Detected Cards</span>
-            <div class="live-header-btns">
-              <button id="btn-live-clear" onclick="liveClearAll()">✕ Clear</button>
-              <button id="btn-live-save-all" onclick="liveSaveAll()">＋ Save All</button>
-            </div>
-          </div>
-          <div id="live-cards-list">
-            <div class="live-empty"><span class="big">👀</span>Point cards at camera<br>then hit Scan Now</div>
-          </div>
+        <!-- Frozen frame preview -->
+        <div id="freeze-preview-wrap" style="display:none;margin-top:8px;position:relative;">
+          <canvas id="freeze-canvas" style="width:100%;border-radius:10px;border:2px solid var(--accent);"></canvas>
+          <div style="position:absolute;top:6px;left:8px;background:rgba(0,0,0,0.7);color:#fff;font-size:0.7rem;padding:3px 8px;border-radius:20px;">📷 Scanning…</div>
+        </div>
+
+        <!-- Card count + scan button -->
+        <div class="card-count-row" style="margin-top:10px;">
+          <span class="ccount-lbl">Cards in frame:</span>
+          <button class="count-btn active" data-n="1" onclick="setCardCount(this,'camera')">1</button>
+          <button class="count-btn" data-n="2" onclick="setCardCount(this,'camera')">2</button>
+          <button class="count-btn" data-n="4" onclick="setCardCount(this,'camera')">4</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px;">
+          <button id="btn-capture-now" onclick="freezeAndScan()" style="flex:1;font-size:1.1rem;padding:14px;">📸 Scan Cards</button>
+          <button id="btn-live-stop" onclick="stopLive()" style="padding:14px 16px;background:rgba(255,255,255,0.07);border:1px solid var(--border);border-radius:10px;color:var(--muted);cursor:pointer;font-size:0.85rem;">■ Stop</button>
         </div>
       </div>
     </div>
@@ -524,8 +513,8 @@ function importLearnedDB(input){
 
 var currentB64 = null, currentStripB64 = null, currentCardCrops = [], currentMime = 'image/jpeg', foundCards = [];
 var iPhonePolling = false, iPhonePollTimer = null;
-var camStream = null, liveScanning = false, liveIntervalSec = 10;
-var liveCountTimer = null, liveCountdown = 0, liveCards = [];
+var camStream = null, liveScanning = false;
+var liveCards = [];
 var snapCanvas = document.createElement('canvas');
 var uploadCardCount = 0; // 0 = auto
 var cameraCardCount = 0;
@@ -543,8 +532,6 @@ var resultsArea  = document.getElementById('results-area');
 var camVideo     = document.getElementById('cam-video');
 var camDot       = document.getElementById('cam-dot');
 var camStatusLbl = document.getElementById('cam-status-lbl');
-var camCountdown = document.getElementById('cam-countdown');
-var liveList     = document.getElementById('live-cards-list');
 var toastEl      = document.getElementById('toast');
 var dlog         = document.getElementById('dlog');
 var btnCapture   = document.getElementById('btn-capture-now');
@@ -1446,14 +1433,9 @@ function startLive(){
       camStream=stream; camVideo.srcObject=stream;
       document.getElementById('cam-pre').style.display='none';
       document.getElementById('live-view').classList.add('active');
-      setLiveStatus('idle','Ready — tap Scan Now');
+      setLiveStatus('idle','Ready');
       log('Camera: '+stream.getVideoTracks()[0].label,'ok');
       toast('Camera ready!','success');
-      // Wait for video to actually have frames before starting auto-scan
-      camVideo.onloadedmetadata = function(){
-        log('Video ready '+camVideo.videoWidth+'x'+camVideo.videoHeight,'ok');
-        if(liveIntervalSec>0) startCountdown();
-      };
     })
     .catch(function(err){
       log('Camera error: '+err.name+' '+err.message,'e');
@@ -1469,38 +1451,11 @@ function stopLive(){
   camVideo.srcObject=null;
   document.getElementById('cam-pre').style.display='';
   document.getElementById('live-view').classList.remove('active');
-  setLiveStatus('idle',''); camCountdown.textContent='';
+  setLiveStatus('idle','');
   log('Camera stopped');
 }
 
-function setIntervalSec(btn){
-  liveIntervalSec=parseInt(btn.dataset.sec);
-  document.querySelectorAll('.interval-btn').forEach(function(b){b.classList.remove('active');});
-  btn.classList.add('active');
-  clearInterval(liveCountTimer); liveCountTimer=null;
-  if(liveIntervalSec>0 && camStream){
-    startCountdown();
-    log('Auto-scan every '+liveIntervalSec+'s');
-  } else {
-    camCountdown.textContent='';
-    log('Auto-scan off');
-  }
-}
-
-function startCountdown(){
-  clearInterval(liveCountTimer);
-  liveCountdown=liveIntervalSec;
-  liveCountTimer=setInterval(function(){
-    if(!camStream){clearInterval(liveCountTimer);return;}
-    if(liveScanning){camCountdown.textContent='scanning…';return;}
-    liveCountdown--;
-    camCountdown.textContent='auto in '+liveCountdown+'s';
-    if(liveCountdown<=0){
-      liveCountdown=liveIntervalSec;
-      triggerLiveScan();
-    }
-  },1000);
-}
+// (auto-interval removed)
 
 var frozenB64 = null;
 var freezeCanvas = null;
@@ -1583,9 +1538,16 @@ function triggerLiveScan(b64){
       return {name:c.name||'',set_name:c.set_name||'',card_number:numberArr[i]||''};
     });
     merged=applyCorrections(merged);
-    setLiveStatus('ok', merged.length+' card'+(merged.length===1?'':'s')+' detected');
-    if(merged.length) mergeLiveResults(merged);
-    else toast('No cards detected','');
+    if(!merged.length){ toast('No cards detected',''); return; }
+    setLiveStatus('ok', merged.length+' card'+(merged.length===1?'':'s')+' found');
+    // Output to main results panel — same as upload
+    foundCards=merged;
+    autoSaveAll(merged);
+    showResultsCards(merged);
+    tcgVerifyAll(merged);
+    // Switch to upload tab so user sees results
+    switchTab('upload');
+    toast(merged.length+' card'+(merged.length===1?'':'s')+' saved!','success');
   }).catch(function(e){
     log('Live scan err: '+e.message,'e');
     setLiveStatus('err',e.message.substring(0,40));
@@ -1593,9 +1555,8 @@ function triggerLiveScan(b64){
   }).finally(function(){
     liveScanning=false;
     btnCapture.disabled=false;
-    btnCapture.textContent='📸 Freeze & Scan';
-    // Auto-unfreeze after scan
-    setTimeout(unfreeze, 1500);
+    btnCapture.textContent='📸 Scan Cards';
+    setTimeout(unfreeze, 800);
   });
 }
 
@@ -1604,183 +1565,9 @@ function setLiveStatus(state,msg){
   camStatusLbl.textContent=msg;
 }
 
-function mergeLiveResults(arr){
-  var added=0;
-  arr.forEach(function(c){
-    var dup=liveCards.some(function(x){
-      return x.name&&c.name&&x.name.toLowerCase()===c.name.toLowerCase()&&x.card_number===c.card_number;
-    });
-    if(!dup){
-      c._lid=Date.now()+Math.random();
-      liveCards.push(c);
-      prependLiveCard(c);
-      added++;
-    }
-  });
-  if(added){
-    document.getElementById('btn-live-save-all').style.display='block';
-    document.getElementById('btn-live-clear').style.display='block';
-    toast(added+' new card'+(added===1?'':'s')+' detected!','success');
-    // TCG verify newly added cards
-    arr.forEach(function(c){
-      if(!c._lid) return;
-      tcgVerifyCard(c).then(function(sug){
-        if(!sug) return;
-        log('TCG live suggestion for "'+c.name+'": '+sug.name+' '+sug.number,'ok');
-        injectTcgSuggestionLive(c._lid, c, sug);
-      });
-    });
-  } else {
-    toast('Cards already in list','');
-  }
-}
 
-function injectTcgSuggestionLive(lid, c, sug){
-  var item = document.getElementById('lci-'+lid);
-  if(!item) return;
-  var existing = item.querySelector('.tcg-suggestion');
-  if(existing) existing.remove();
 
-  var parts = [];
-  if(sug.nameDiff) parts.push('Name: <strong>'+esc(sug.name)+'</strong>');
-  if(sug.numDiff)  parts.push('Number: <strong>'+esc(sug.number)+'</strong>');
-  if(sug.setDiff)  parts.push('Set: <strong>'+esc(sug.set)+'</strong>');
-  if(!parts.length) return;
 
-  var confColor = sug.confidence === 'high' ? '#4caf50' : '#e86b2a';
-  var confLabel = sug.confidence === 'high' ? '● High' : '◐ Low';
-
-  var div = document.createElement('div');
-  div.className = 'tcg-suggestion';
-  div.style.cssText = 'margin-top:8px;padding:7px 10px;background:rgba(74,240,255,0.06);border:1px solid rgba(74,240,255,0.2);border-radius:8px;font-size:0.73rem;';
-  div.innerHTML =
-    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'+
-      '<span style="color:var(--accent);font-weight:600;">🔍 TCG suggests:</span>'+
-      '<span style="color:'+confColor+';font-size:0.68rem;">'+confLabel+'</span>'+
-    '</div>'+
-    '<div style="color:#ccc;margin-bottom:6px;">'+parts.join(' · ')+'</div>'+
-    '<div style="display:flex;gap:6px;">'+
-      '<button class="tcg-accept-live" style="flex:1;padding:4px 8px;border-radius:6px;border:none;background:rgba(74,240,255,0.15);color:var(--accent);font-size:0.72rem;font-weight:600;cursor:pointer;">✓ Accept</button>'+
-      '<button class="tcg-ignore-live" style="padding:4px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:none;color:#666;font-size:0.72rem;cursor:pointer;">Ignore</button>'+
-    '</div>';
-
-  div.querySelector('.tcg-accept-live').onclick = function(){
-    // Update liveCards entry
-    var lc = liveCards.find(function(x){ return x._lid == lid; });
-    if(lc){
-      if(sug.nameDiff) lc.name = sug.name;
-      if(sug.numDiff)  lc.card_number = sug.number;
-      if(sug.setDiff)  lc.set_name = sug.set;
-    }
-    // Update display
-    var nameEl = item.querySelector('.lci-name');
-    var metaEl = item.querySelector('.lci-meta');
-    if(nameEl && sug.nameDiff) nameEl.textContent = sug.name;
-    if(metaEl){
-      metaEl.innerHTML =
-        (sug.number?'<span>'+esc(sug.number)+'</span>':'<span style="color:var(--muted)">No number</span>')+
-        (sug.set?' &nbsp;·&nbsp; <span>'+esc(sug.set)+'</span>':'');
-    }
-    // Save correction + re-save card
-    if(sug.name && sug.number) saveCorrection(sug.name, sug.number, sug.set);
-    if(lc) liveAutoSave(lc);
-    div.innerHTML = '<div style="color:#4caf50;font-size:0.72rem;">✓ Applied &amp; saved</div>';
-  };
-  div.querySelector('.tcg-ignore-live').onclick = function(){ div.remove(); };
-
-  item.appendChild(div);
-}
-
-function prependLiveCard(c){
-  var empty=liveList.querySelector('.live-empty');
-  if(empty) empty.remove();
-  var item=document.createElement('div');
-  var lid=c._lid;
-  item.className='live-card-item'; item.id='lci-'+lid;
-  item.innerHTML=
-    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">'+
-      '<div style="flex:1;min-width:0;">'+
-        '<div class="lci-name">'+esc(c.name||'Unknown')+'</div>'+
-        '<div class="lci-meta">'+
-          (c.card_number?'<span>'+esc(c.card_number)+'</span>':'<span style="color:var(--muted)">No number found</span>')+
-          (c.set_name?' &nbsp;·&nbsp; <span>'+esc(c.set_name)+'</span>':'')+
-          (c._corrected?'&nbsp;<span style="color:#aaf;font-size:0.65rem;">✦ memory</span>':'')+
-        '</div>'+
-      '</div>'+
-      '<button class="lci-dismiss" onclick="liveDismiss(\''+lid+'\')">✕</button>'+
-    '</div>'+
-    '<div style="display:flex;align-items:center;gap:8px;margin-top:9px;">'+
-      '<label style="font-size:0.72rem;color:var(--muted);white-space:nowrap;">QTY</label>'+
-      '<input type="number" min="1" value="1" id="lci-qty-'+lid+'" onchange="liveUpdateQty(\''+lid+'\')" style="width:54px;background:rgba(255,255,255,0.07);border:1px solid var(--border);border-radius:6px;padding:4px 6px;color:var(--text);font-size:0.85rem;text-align:center;" />'+
-      '<button class="lci-save auto-saved" id="lci-savebtn-'+lid+'" onclick="liveSaveOne(\''+lid+'\')">✎ Fix</button>'+
-    '</div>';
-  liveList.insertBefore(item,liveList.firstChild);
-  // Auto-save immediately
-  liveAutoSave(c);
-}
-
-function liveUpdateQty(lid){
-  var c=liveCards.find(function(x){return x._lid==lid;}); if(!c||!c._savedId) return;
-  var qtyEl=document.getElementById('lci-qty-'+lid);
-  var qty=qtyEl?Math.max(1,parseInt(qtyEl.value)||1):1;
-  var idx=cards.findIndex(function(x){return x._id===c._savedId;});
-  if(idx>=0){cards[idx].qty=qty; saveCards(); renderTable();}
-}
-
-function liveAutoSave(c){
-  // Auto-save with qty=1, broadcast to extension
-  var entry={name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:1,notes:'',date_scanned:new Date().toLocaleDateString(),_id:Date.now()};
-  c._savedId = entry._id;
-  cards.push(entry); saveCards(); renderTable();
-  broadcastToExtension(c.name||'', c.card_number||'');
-  log('Live auto-saved: '+(c.name||'?')+' '+(c.card_number||''),'ok');
-}
-
-function liveSaveOne(lid){
-  // "Fix" button — update the already-saved entry with corrected values + qty
-  var c=liveCards.find(function(x){return x._lid==lid;}); if(!c)return;
-  var qtyEl=document.getElementById('lci-qty-'+lid);
-  var qty=qtyEl?Math.max(1,parseInt(qtyEl.value)||1):1;
-  // Update existing saved entry
-  var idx=cards.findIndex(function(x){return x._id===c._savedId;});
-  var updated={name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:qty,notes:'',date_scanned:new Date().toLocaleDateString(),_id:c._savedId||Date.now()};
-  if(idx>=0){cards[idx]=updated;}else{cards.push(updated);}
-  saveCards(); renderTable();
-  if(c.name && c.card_number) saveCorrection(c.name, c.card_number, c.set_name);
-  broadcastToExtension(c.name||'', c.card_number||'');
-  toast((c.name||'Card')+' updated!','success');
-  var btn=document.getElementById('lci-savebtn-'+lid);
-  if(btn){btn.textContent='✓ Fixed!';btn.disabled=true;}
-}
-
-function liveDismiss(lid){
-  liveCards=liveCards.filter(function(x){return x._lid!=lid;});
-  var el=document.getElementById('lci-'+lid); if(el)el.remove();
-  if(!liveCards.length) resetLiveList();
-}
-
-function liveClearAll(){
-  liveCards=[];
-  resetLiveList();
-  log('Live results cleared');
-}
-
-function resetLiveList(){
-  liveList.innerHTML='<div class="live-empty"><span class="big">👀</span>Point cards at camera<br>then hit Scan Now</div>';
-  document.getElementById('btn-live-save-all').style.display='none';
-  document.getElementById('btn-live-clear').style.display='none';
-}
-
-function liveSaveAll(){
-  var unsaved=liveCards.filter(function(c){var b=document.querySelector('#lci-'+c._lid+' .lci-save');return b&&!b.disabled;});
-  if(!unsaved.length){toast('All already saved!');return;}
-  unsaved.forEach(function(c,i){
-    cards.push({name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:1,notes:'',date_scanned:new Date().toLocaleDateString(),_id:Date.now()+i});
-    var b=document.querySelector('#lci-'+c._lid+' .lci-save');
-    if(b){b.textContent='✓ Saved';b.className='lci-save saved';b.disabled=true;}
-  });
-  saveCards(); renderTable(); toast(unsaved.length+' cards saved!','success');
-}
 
 
 // ── Corrections ───────────────────────────────────────────────
