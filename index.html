@@ -401,7 +401,7 @@ var savedSheets = JSON.parse(localStorage.getItem('pokescan_sheets')||'[]');
 // ── Prompts ───────────────────────────────────────────────────
 var PROMPT_NAMES = 'This image contains one or more Pokemon trading cards laid flat.\n\nFor EVERY card find the full Pokemon name including any suffix (EX, GX, V, VMAX, VSTAR, MEGA, TAG TEAM, ex, etc). Include Trainer card names too.\n\nCards may be in a row or 2x2 grid — find ALL of them.\n\nReturn ONLY a JSON array, no markdown:\n[{"name":"..."}]';
 
-var PROMPT_NUMBER = 'You are a JSON API. Respond ONLY with a JSON object, no explanation, no markdown.\n\nThis image shows a Pokemon card (or the bottom portion of one). Find the collector number in the bottom-left or bottom-right corner.\n\nRules:\n- Always has a slash: like 044/068 or 8/82 or 118/094 or GG50/GG70 or RC31/RC32\n- Tiny text near the very bottom edge, after the illustrator credit line\n- Check BOTH bottom-left AND bottom-right corners\n- Common misreads: T→1, I→1, O→0, S→5, B→8 — these are numbers not letters\n- NEVER use HP values, attack damage, weakness/resistance numbers\n\nRespond with exactly:\n{"card_number":"..."}\n\nEmpty string if truly unreadable.';
+var PROMPT_NUMBER = 'You are a JSON API. Respond ONLY with a JSON object, no explanation, no markdown.\n\nThis image shows the bottom strip of a Pokemon card. Your ONLY job is to find the collector number.\n\nThe collector number:\n- Is always formatted with a slash: 044/068 or 8/82 or 118/094 or GG50/GG70 or RC31/RC32\n- Appears as small print near the very bottom edge of the card\n- Is usually bottom-left OR bottom-right corner\n- Comes after the illustrator credit (the tiny name after the illustration symbol)\n\nCRITICAL digit rules — these misreads cause the most errors:\n- The digit 1 is often misread as: T, I, l, 7\n- The digit 7 is often misread as: 1\n- The digit 0 is often misread as: O\n- The digit 5 is often misread as: S\n- The digit 8 is often misread as: B\n- If you see a letter where a digit should be, it IS a digit\n\nBefore responding, ask yourself:\n- Does every character before the slash look like a digit? If any look like letters, they are misread digits.\n- Is the number reasonable? Pokemon collector numbers are typically 3 digits or fewer before the slash.\n\nDO NOT return:\n- HP values (these are large numbers like 300, 220, 130 — no slash)\n- Attack damage numbers\n- Weakness or resistance values\n\nRespond with exactly:\n{"card_number":"..."}\n\nEmpty string ONLY if the bottom of the card is completely illegible.';
 
 // ── Elements ──────────────────────────────────────────────────
 var apiKeyEl = document.getElementById('api-key');
@@ -510,19 +510,43 @@ function buildCrops(canvas,dw,dh,cardCount){
   var numRows=(dh>dw*1.1)?2:1;
   var numCols=cardCount>2?2:cardCount>1?2:1;
   var rowH=Math.round(dh/numRows), colW=Math.round(dw/numCols);
-  var botH=Math.round(rowH*0.30);
-  var cropScale=Math.min(5,900/colW);
+  // Use bottom 12% — tight crop so collector number fills the image
+  var botH=Math.round(rowH*0.12);
+  // Minimum height to ensure enough pixels
+  if(botH < 30) botH = Math.round(rowH*0.18);
+  var cropScale=Math.min(8, 1200/colW);
   var ccw=Math.round(colW*cropScale), cch=Math.round(botH*cropScale);
   var crops=[];
   for(var row=0;row<numRows;row++){
     for(var col=0;col<numCols;col++){
       if(crops.length>=cardCount&&cardCount>0) break;
       var cc=document.createElement('canvas'); cc.width=ccw; cc.height=cch;
-      cc.getContext('2d').drawImage(canvas,col*colW,(row+1)*rowH-botH,colW,botH,0,0,ccw,cch);
-      crops.push(cc.toDataURL('image/jpeg',0.92).split(',')[1]);
+      var ctx=cc.getContext('2d');
+      ctx.drawImage(canvas,col*colW,(row+1)*rowH-botH,colW,botH,0,0,ccw,cch);
+      // Boost contrast so tiny text is crisper
+      boostContrast(ctx, ccw, cch);
+      crops.push(cc.toDataURL('image/jpeg',0.95).split(',')[1]);
     }
   }
   return crops;
+}
+
+function boostContrast(ctx, w, h){
+  var img=ctx.getImageData(0,0,w,h), d=img.data;
+  // Find min/max luminance for auto-levels
+  var mn=255, mx=0;
+  for(var i=0;i<d.length;i+=4){
+    var l=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+    if(l<mn) mn=l; if(l>mx) mx=l;
+  }
+  var range=mx-mn||1;
+  // Apply contrast stretch + slight sharpening via luminance
+  for(var i=0;i<d.length;i+=4){
+    d[i]  =Math.min(255,Math.round((d[i]  -mn)/range*255));
+    d[i+1]=Math.min(255,Math.round((d[i+1]-mn)/range*255));
+    d[i+2]=Math.min(255,Math.round((d[i+2]-mn)/range*255));
+  }
+  ctx.putImageData(img,0,0);
 }
 
 function resetUpload(){
@@ -662,13 +686,18 @@ async function scanImage(b64, crops, cardCount){
     return scanCrop(k, crops[i]||'');
   }));
 
-  return nameArr.map(function(c,i){
+  // TCG-validate numbers for DB misses — fixes digit misreads automatically
+  var finalCards = await Promise.all(nameArr.map(async function(c,i){
     var dbHit=dbHits.find(function(h){return h.i===i;});
     if(dbHit){
       return {name:dbHit.hit.name||c.name, card_number:dbHit.hit.card_number, set_name:dbHit.hit.set_name, _fromDB:true, _dbHits:dbHit.hit.hits};
     }
-    return {name:c.name||'', card_number:cropResults[i]||'', set_name:''};
-  });
+    var rawNum = cropResults[i]||'';
+    // Validate + auto-fix digit misreads via TCG API
+    var validatedNum = rawNum ? await tcgValidateNumber(c.name, rawNum) : '';
+    return {name:c.name||'', card_number:validatedNum, set_name:''};
+  }));
+  return finalCards;
 }
 
 async function callClaude(apiKey, b64, mime, prompt){
@@ -687,38 +716,109 @@ async function callClaude(apiKey, b64, mime, prompt){
   try{ return JSON.parse(raw); }catch(e){ return []; }
 }
 
-async function scanCrop(apiKey, cropB64){
-  if(!cropB64) return '';
+async function askClaudeForNumber(apiKey, cropB64, extraNote){
+  var prompt = PROMPT_NUMBER + (extraNote ? '\n\n' + extraNote : '');
   var body={model:'claude-sonnet-4-20250514',max_tokens:200,
     system:'You are a JSON-only API.',
     messages:[{role:'user',content:[
       {type:'image',source:{type:'base64',media_type:'image/jpeg',data:cropB64}},
-      {type:'text',text:PROMPT_NUMBER}
-    ]},{role:'assistant',content:'{'}]
+      {type:'text',text:prompt}
+    ]},{role:'assistant',content:'{'}],
+    apiKey:apiKey
   };
-  try{
-    var res=await fetch(WORKER,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(Object.assign({},body,{apiKey:apiKey}))});
-    var data=await res.json();
-    if(data.error) return '';
-    var raw='{'+(data.content&&data.content[0]&&data.content[0].text||'');
-    var parsed=JSON.parse(raw);
-    var num=parsed.card_number||'';
-    // Retry if starts with suspicious letter
-    if(num && /^[TItI]/.test(num)){
-      var body2=JSON.parse(JSON.stringify(body));
-      body2.messages[0].content[1].text=PROMPT_NUMBER+'\n\nNOTE: You returned "'+num+'". The first character looks like it might be the digit 1 misread as a letter. Please look again very carefully.';
-      body2.messages[1]={role:'assistant',content:'{'};
-      body2.apiKey=apiKey;
-      var res2=await fetch(WORKER,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body2)});
-      var d2=await res2.json();
-      if(!d2.error){
-        var r2='{'+(d2.content&&d2.content[0]&&d2.content[0].text||'');
-        try{ var p2=JSON.parse(r2); if(p2.card_number) num=p2.card_number; }catch(e){}
+  var res=await fetch(WORKER,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  var data=await res.json();
+  if(data.error) return '';
+  var raw='{'+(data.content&&data.content[0]&&data.content[0].text||'');
+  try{ return JSON.parse(raw).card_number||''; }catch(e){ return ''; }
+}
+
+// Generate digit-swap variants for TCG validation
+// Handles the most common misreads: 1↔7, 1↔T/I, 0↔O, 5↔S, 8↔B
+function numVariants(num){
+  var n=num.split('/')[0]; // just the number before slash
+  var variants=new Set([n]);
+  var swaps=[['1','7'],['7','1'],['0','O'],['O','0'],['5','S'],['S','5'],['8','B'],['B','8'],['I','1'],['l','1'],['T','1']];
+  // For each position, try each swap
+  for(var pos=0;pos<n.length;pos++){
+    var ch=n[pos];
+    swaps.forEach(function(sw){
+      if(ch===sw[0]){
+        var v=n.slice(0,pos)+sw[1]+n.slice(pos+1);
+        variants.add(v);
+        // Also try cascading (two errors)
+        for(var pos2=pos+1;pos2<v.length;pos2++){
+          swaps.forEach(function(sw2){
+            if(v[pos2]===sw2[0]) variants.add(v.slice(0,pos2)+sw2[1]+v.slice(pos2+1));
+          });
+        }
       }
+    });
+  }
+  variants.delete(n); // don't include original
+  return Array.from(variants);
+}
+
+async function scanCrop(apiKey, cropB64, cardName){
+  if(!cropB64) return '';
+  try{
+    // First pass
+    var num = await askClaudeForNumber(apiKey, cropB64, null);
+    log('Crop raw: "'+num+'"'+(cardName?' for '+cardName:''),'ok');
+    if(!num) return '';
+
+    // Quick sanity: if no slash, likely wrong (HP, damage etc)
+    if(!num.includes('/') && !/^[A-Z]{1,3}\d/.test(num)){
+      log('No slash in "'+num+'" — retrying with hint','w');
+      num = await askClaudeForNumber(apiKey, cropB64,
+        'IMPORTANT: Your previous answer "'+num+'" has no slash. The collector number ALWAYS contains a slash like 044/068. Look again at the very bottom corners only.');
+      log('Retry result: "'+num+'"','ok');
     }
+
+    // If still no slash, give up
+    if(!num.includes('/') && !/^[A-Z]{1,3}\d/.test(num)) return num;
+
     return num;
-  }catch(e){ return ''; }
+  }catch(e){ log('scanCrop err: '+e.message,'e'); return ''; }
+}
+
+// TCG number validation — called after we have both name + number
+// Tries digit-swap variants if the original doesn't match any real card
+async function tcgValidateNumber(cardName, rawNum){
+  if(!cardName || !rawNum) return rawNum;
+  var numOnly = rawNum.split('/')[0];
+  var safe = cardName.replace(/[:"]/g,' ');
+
+  // Check if original number exists for this card
+  try{
+    var r=await fetch(TCG_API+'?q=name:"'+encodeURIComponent(safe)+'" number:'+encodeURIComponent(numOnly)+'&pageSize=3');
+    var d=await r.json();
+    if(d.data && d.data.length){
+      var best=d.data[0];
+      var corrected=best.number+(best.set&&best.set.printedTotal?'/'+best.set.printedTotal:'');
+      log('TCG validated: '+rawNum+' → '+corrected,'ok');
+      return corrected;
+    }
+  }catch(e){ return rawNum; }
+
+  // No match — try digit-swap variants
+  var variants = numVariants(numOnly);
+  log('No TCG match for "'+rawNum+'" — trying '+variants.length+' digit variants','w');
+  for(var i=0;i<variants.length;i++){
+    try{
+      var r2=await fetch(TCG_API+'?q=name:"'+encodeURIComponent(safe)+'" number:'+encodeURIComponent(variants[i])+'&pageSize=3');
+      var d2=await r2.json();
+      if(d2.data && d2.data.length){
+        var best2=d2.data[0];
+        var fixed=best2.number+(best2.set&&best2.set.printedTotal?'/'+best2.set.printedTotal:'');
+        log('Digit-swap fix: "'+rawNum+'" → "'+fixed+'" via variant "'+variants[i]+'"','ok');
+        return fixed;
+      }
+    }catch(e){ continue; }
+  }
+
+  log('No TCG match found for any variant of "'+rawNum+'"','w');
+  return rawNum; // return original if nothing found
 }
 
 // ── TCG API enrichment (set name authority) ───────────────────
@@ -1259,35 +1359,50 @@ function captureScan(){
   if(cropB64.length>3000000) cropB64=freezeCanvas.toDataURL('image/jpeg',0.70).split(',')[1];
 
   // Bottom crop for number
-  var botH=Math.round(freezeCanvas.height*0.30);
-  var botScale=Math.min(5,900/freezeCanvas.width);
+  // Tight 12% crop — number fills the image, less noise
+  var botH=Math.round(freezeCanvas.height*0.12);
+  if(botH<30) botH=Math.round(freezeCanvas.height*0.18);
+  var botScale=Math.min(8,1200/freezeCanvas.width);
   var bc=document.createElement('canvas'); bc.width=Math.round(freezeCanvas.width*botScale); bc.height=Math.round(botH*botScale);
-  bc.getContext('2d').drawImage(freezeCanvas,0,freezeCanvas.height-botH,freezeCanvas.width,botH,0,0,bc.width,bc.height);
+  var bctx=bc.getContext('2d');
+  bctx.drawImage(freezeCanvas,0,freezeCanvas.height-botH,freezeCanvas.width,botH,0,0,bc.width,bc.height);
+  boostContrast(bctx, bc.width, bc.height);
   var botCropB64=bc.toDataURL('image/jpeg',0.92).split(',')[1];
 
   camScanning=true; btnCapture.disabled=true; btnCapture.textContent='⏳ Scanning…';
   setCamStatus('scanning','Scanning…');
 
   var k=getKey();
+  // Step 1: get name + number in parallel
   Promise.all([
     callClaude(k,cropB64,'image/jpeg',PROMPT_NAMES+'\n\nIMPORTANT: There is EXACTLY 1 card. Return exactly 1 object.'),
-    scanCrop(k,botCropB64)
+    scanCrop(k,botCropB64,'')
   ]).then(function(results){
-    var nameArr=results[0]||[], num=results[1]||'';
+    var nameArr=results[0]||[], rawNum=results[1]||'';
     if(!nameArr.length){setCamStatus('err','No card detected');toast('No card detected — adjust position','');return;}
-    var c={name:nameArr[0].name||'',card_number:num,set_name:''};
-    // DB lookup
-    var hit=dbLookup(c.name);
-    if(hit){ c.card_number=hit.card_number; c.set_name=hit.set_name; c._fromDB=true; c._dbHits=hit.hits; }
-    var merged=[c];
-    autoSaveCards(merged);
-    foundCards=merged;
-    showResultsCards(merged);
-    if(!c._fromDB) tcgEnrichAll(merged);
-    lastHash=null; // reset so same card can be rescanned if needed
-    var display=c.name+(c.card_number?' · '+c.card_number:'');
-    setCamStatus('ok','✓ '+display);
-    toast((c.name||'Card')+' saved!','success');
+    var name=nameArr[0].name||'';
+
+    // DB lookup — instant path
+    var hit=dbLookup(name);
+    if(hit){
+      var c={name:hit.name||name, card_number:hit.card_number, set_name:hit.set_name, _fromDB:true, _dbHits:hit.hits};
+      autoSaveCards([c]); foundCards=[c]; showResultsCards([c]);
+      lastHash=null;
+      setCamStatus('ok','✓ '+c.name+(c.card_number?' · '+c.card_number:''));
+      toast(c.name+' saved!','success');
+      return;
+    }
+
+    // TCG-validate number (fixes digit misreads automatically)
+    var validateP = rawNum ? tcgValidateNumber(name, rawNum) : Promise.resolve('');
+    validateP.then(function(validatedNum){
+      var c={name:name, card_number:validatedNum||rawNum, set_name:''};
+      autoSaveCards([c]); foundCards=[c]; showResultsCards([c]);
+      tcgEnrichAll([c]);
+      lastHash=null;
+      setCamStatus('ok','✓ '+c.name+(c.card_number?' · '+c.card_number:''));
+      toast(c.name+' saved!','success');
+    });
   }).catch(function(e){
     setCamStatus('err',e.message.substring(0,40));
     toast('Scan failed','error'); log('Cam scan err: '+e.message,'e');
@@ -1296,6 +1411,8 @@ function captureScan(){
     setTimeout(function(){document.getElementById('freeze-wrap').style.display='none';},1200);
   });
 }
+
+
 
 function setCamStatus(state,msg){
   camDot.className='cam-dot'+(state==='ok'?' ok':state==='scanning'?' scanning':state==='err'?' err':'');
