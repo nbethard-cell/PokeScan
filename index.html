@@ -351,7 +351,7 @@ tr:hover td{background:rgba(255,255,255,0.02);}
       <span class="ptitle">Debug Log</span>
       <span class="pchev" id="log-chev">▼</span>
     </div>
-    <div class="pbody" id="log-body">
+    <div class="pbody open" id="log-body">
       <div class="log-wrap" id="log-out"></div>
     </div>
   </div>
@@ -807,6 +807,35 @@ async function identifyCard(apiKey, cardB64, cardMime, nameHint){
 
   if(match.confidence==='high') dbLearn(best.name,num,set,best.id,'image-match');
   return {name:best.name, card_number:num, set_name:set, confidence:match.confidence, _reason:match.reason, tcg_id:best.id};
+}
+
+// Core Claude API call
+async function callClaude(apiKey, b64, mime, prompt){
+  log('callClaude: sending request, b64 len='+b64.length);
+  var body = {
+    apiKey: apiKey,
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1000,
+    system: 'You are a JSON-only API. Respond with valid JSON only, no explanation, no markdown.',
+    messages: [
+      {role:'user', content:[
+        {type:'image', source:{type:'base64', media_type:mime, data:b64}},
+        {type:'text', text:prompt}
+      ]},
+      {role:'assistant', content:'['}
+    ]
+  };
+  try{
+    var res = await fetch(WORKER, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    var data = await res.json();
+    log('callClaude response received, error='+(data.error?data.error.message:'none'));
+    if(data.error) throw new Error(data.error.message||'API error');
+    var raw = '['+((data.content&&data.content[0]&&data.content[0].text)||'');
+    try{ return JSON.parse(raw); }catch(e){ log('JSON parse fail: '+raw.substring(0,60),'e'); return []; }
+  }catch(e){
+    log('callClaude err: '+e.message,'e');
+    throw e;
+  }
 }
 
 // Scan a full image: extract names, then identify each card
