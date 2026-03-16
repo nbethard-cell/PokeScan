@@ -679,19 +679,57 @@ var TCG_CACHE = {};
 var TCG_API = 'https://api.pokemontcg.io/v2/cards';
 
 // Get TCG candidates for a card name, sorted newest first
+async function tcgFetch(query, pageSize){
+  // Wrap fetch with 8s timeout so it never hangs
+  return new Promise(function(resolve){
+    var done=false;
+    var timer=setTimeout(function(){
+      if(!done){ done=true; log('TCG fetch timeout for: '+query,'w'); resolve([]); }
+    }, 8000);
+    fetch(TCG_API+'?q='+encodeURIComponent(query)+'&pageSize='+(pageSize||8)+'&orderBy=-set.releaseDate')
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if(!done){ done=true; clearTimeout(timer); resolve((d.data||[]).filter(function(c){return c.images&&c.images.small;})); }
+      })
+      .catch(function(e){
+        if(!done){ done=true; clearTimeout(timer); log('TCG fetch err: '+e.message,'e'); resolve([]); }
+      });
+  });
+}
+
 async function tcgCandidates(name){
-  var safe = name.replace(/[:"]/g,' ').trim();
-  if(!safe) return [];
-  var cacheKey = 'cands:'+safe.toLowerCase();
+  if(!name) return [];
+  var cacheKey = 'cands:'+name.toLowerCase();
   if(TCG_CACHE[cacheKey]) return TCG_CACHE[cacheKey];
-  try{
-    var r = await fetch(TCG_API+'?q=name:"'+encodeURIComponent(safe)+'"&pageSize=8&orderBy=-set.releaseDate');
-    var d = await r.json();
-    var results = (d.data||[]).filter(function(c){ return c.images&&c.images.small; });
-    TCG_CACHE[cacheKey] = results;
-    log('TCG: '+results.length+' candidates for "'+name+'"');
-    return results;
-  }catch(e){ log('TCG fetch err: '+e.message,'e'); return []; }
+
+  // Strip special chars for query — & breaks Lucene syntax
+  // For TAG TEAM cards like "A & B & C GX" try full name first, then first pokemon only
+  var safe = name.replace(/[:"&]/g,' ').replace(/\s+/g,' ').trim();
+
+  var results = await tcgFetch('name:"'+safe+'"', 8);
+  log('TCG: '+results.length+' results for "'+safe+'"');
+
+  // Fallback 1: if TAG TEAM / multi-pokemon, try just first name before &
+  if(!results.length && name.includes('&')){
+    var firstName = name.split('&')[0].trim();
+    // Also strip suffixes like GX, EX etc for broader match
+    var baseName = firstName.replace(/\s+(GX|EX|V|VMAX|VSTAR|ex)$/i,'').trim();
+    log('TAG TEAM fallback: trying "'+baseName+'"','w');
+    results = await tcgFetch('name:"'+baseName+'"', 8);
+    log('Fallback got '+results.length+' results');
+  }
+
+  // Fallback 2: drop suffix (EX, GX, V etc) and try broader search
+  if(!results.length){
+    var stripped = safe.replace(/\s+(GX|EX|VMAX|VSTAR|TAG TEAM|MEGA|ex)$/i,'').trim();
+    if(stripped !== safe){
+      log('Suffix fallback: trying "'+stripped+'"','w');
+      results = await tcgFetch('name:"'+stripped+'"', 8);
+    }
+  }
+
+  TCG_CACHE[cacheKey] = results;
+  return results;
 }
 
 // Ask Claude to visually match user photo against official card image URLs
