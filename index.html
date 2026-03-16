@@ -830,7 +830,7 @@ async function identifyCard(apiKey, cardB64, cardMime, nameHint, cropB64){
   if(!candidates.length){
     // Not in TCG DB — save with whatever Claude read
     return {name:name, card_number:rawNum, set_name:'', confidence: rawNum?'medium':'none',
-      _reason: rawNum ? 'Not in TCG database — number from image' : 'Card not found in TCG database'};
+      _reason: rawNum ? 'Not in TCG database — number from image' : 'Card not found in TCG database', _candidates:[]};
   }
 
   // Try to match raw number against candidates
@@ -840,7 +840,7 @@ async function identifyCard(apiKey, cardB64, cardMime, nameHint, cropB64){
     var set=matched.set?matched.set.name:'';
     log('Exact TCG match: '+matched.name+' '+num,'ok');
     dbLearn(matched.name, num, set, matched.id, 'tcg-match');
-    return {name:matched.name, card_number:num, set_name:set, confidence:'high', tcg_id:matched.id};
+    return {name:matched.name, card_number:num, set_name:set, confidence:'high', tcg_id:matched.id, _imgUrl:matched.images&&matched.images.small||'', _candidates:candidates.slice(0,5)};
   }
 
   // Try digit-swap variants on the number
@@ -851,7 +851,7 @@ async function identifyCard(apiKey, cardB64, cardMime, nameHint, cropB64){
       var set=fixed.set?fixed.set.name:'';
       log('Digit-swap fix: "'+rawNum+'" → '+num,'ok');
       dbLearn(fixed.name, num, set, fixed.id, 'digit-fix');
-      return {name:fixed.name, card_number:num, set_name:set, confidence:'high', tcg_id:fixed.id};
+      return {name:fixed.name, card_number:num, set_name:set, confidence:'high', tcg_id:fixed.id, _imgUrl:fixed.images&&fixed.images.small||'', _candidates:candidates.slice(0,5)};
     }
   }
 
@@ -1153,71 +1153,88 @@ function showResultsCards(arr){
   var h='<div class="found-header"><div class="found-count"><span>'+arr.length+'</span> card'+(arr.length===1?'':'s')+'</div></div><div class="cards-grid">';
   arr.forEach(function(c,i){
     var isFailed = c.confidence==='none'||c.confidence==='low';
-    var rowStyle = isFailed ? 'border-left:3px solid var(--red);' : c.confidence==='medium'?'border-left:3px solid var(--yellow);':'';
+    var isUncertain = isFailed || c.confidence==='medium';
+    var leftBorder = isFailed ? 'border-left:3px solid var(--red);' : c.confidence==='medium' ? 'border-left:3px solid var(--yellow);' : '';
 
-    // Candidate picker for failed cards
-    var candidatesHtml='';
-    if(isFailed && c._candidates && c._candidates.length){
-      candidatesHtml='<div style="grid-column:1/-1;margin-top:6px;">'+
-        '<div style="font-size:0.68rem;color:var(--muted);margin-bottom:6px;">Which card is this? Pick one:</div>'+
+    // Reference image (show for matched cards + medium confidence)
+    var refImg = '';
+    if(c.tcg_id && (c.confidence==='high'||c.confidence==='medium')){
+      // We store image URL in _imgUrl if available
+      if(c._imgUrl){
+        refImg = '<img src="'+esc(c._imgUrl)+'" style="height:60px;border-radius:5px;border:1px solid var(--border);margin-top:4px;" title="TCG reference image"/>';
+      }
+    }
+
+    // Candidate number picker — shown when low/none confidence OR medium (so user can override)
+    var candidatesHtml = '';
+    if(isUncertain && c._candidates && c._candidates.length){
+      candidatesHtml = '<div style="grid-column:1/-1;margin-top:8px;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;">'+
+        '<div style="font-size:0.68rem;color:var(--muted);margin-bottom:7px;">'+(isFailed ? '🔍 Which card is this?' : '🔍 Wrong number? Pick the correct one:')+' </div>'+
         '<div style="display:flex;gap:6px;flex-wrap:wrap;">'+
-        c._candidates.map(function(cand,ci){
-          var num=cand.number+(cand.set&&cand.set.printedTotal?'/'+cand.set.printedTotal:'');
-          var set=cand.set?cand.set.name:'';
+        c._candidates.map(function(cand){
+          var num = cand.number+(cand.set&&cand.set.printedTotal?'/'+cand.set.printedTotal:'');
+          var set = cand.set?cand.set.name:'';
+          var img = cand.images&&cand.images.small ? '<img src="'+esc(cand.images.small)+'" style="width:36px;border-radius:3px;display:block;margin-bottom:3px;"/>' : '';
           return '<button class="cand-btn" '+
-            'data-idx="'+i+'" data-name="'+esc(cand.name)+'" data-num="'+esc(num)+'" data-set="'+esc(set)+'" data-id="'+esc(cand.id||'')+'" '+
+            'data-idx="'+i+'" data-name="'+esc(cand.name)+'" data-num="'+esc(num)+'" data-set="'+esc(set)+'" data-id="'+esc(cand.id||'')+'" data-img="'+esc(cand.images&&cand.images.small||'')+'" '+
             'onclick="pickCandidateEl(this)" '+
-            'style="padding:5px 10px;border-radius:6px;border:1px solid var(--border);background:rgba(255,255,255,0.04);color:var(--text);font-size:0.72rem;cursor:pointer;text-align:left;">'+
-            '<strong>'+esc(cand.name)+'</strong><br><span style="color:var(--accent);">'+esc(num)+'</span> <span style="color:var(--muted);">'+esc(set)+'</span>'+
+            'style="padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:rgba(255,255,255,0.04);color:var(--text);font-size:0.7rem;cursor:pointer;text-align:left;min-width:80px;">'+
+            img+
+            '<span style="color:var(--accent);font-weight:600;">'+esc(num)+'</span><br>'+
+            '<span style="color:var(--muted);font-size:0.65rem;">'+esc(set)+'</span>'+
           '</button>';
         }).join('')+
         '</div></div>';
     }
 
-    // Rescan prompt for failed with no candidates
-    var rescanHtml='';
+    // Rescan prompt — only when no candidates at all
+    var rescanHtml = '';
     if(isFailed && (!c._candidates||!c._candidates.length)){
-      rescanHtml='<div style="grid-column:1/-1;padding:8px 10px;background:rgba(255,60,60,0.07);border:1px solid rgba(255,60,60,0.2);border-radius:8px;font-size:0.75rem;color:#f88;">'+
-        '⚠ '+esc(c._reason||'Could not identify card')+'. Try better lighting or hold the card flatter.</div>';
+      rescanHtml = '<div style="grid-column:1/-1;padding:8px 10px;background:rgba(255,60,60,0.06);border:1px solid rgba(255,60,60,0.2);border-radius:8px;font-size:0.75rem;color:#f88;">'+
+        '⚠ '+esc(c._reason||'Could not identify')+' — try better lighting or hold the card flatter.</div>';
     }
 
-    h+='<div class="card-result" id="cr-'+i+'" style="'+rowStyle+'">'+
-      '<div><div class="cr-label">Name</div>'+
+    h += '<div class="card-result" id="cr-'+i+'" style="'+leftBorder+'">'+
+      '<div>'+
+        '<div class="cr-label">Name</div>'+
         '<input class="cr-input" data-idx="'+i+'" data-key="name" value="'+esc(c.name||'')+'" oninput="updateFound(this)"/>'+
-        confIcon(c)+
+        confIcon(c)+refImg+
       '</div>'+
-      '<div><div class="cr-label">Card #</div>'+
-        '<input class="cr-input'+(c.confidence==='high'||c._fromDB?' verified':'')+'" data-idx="'+i+'" data-key="card_number" value="'+esc(c.card_number||'')+'" oninput="updateFound(this)"/>'+
+      '<div>'+
+        '<div class="cr-label">Card #</div>'+
+        '<input class="cr-input'+(c.confidence==='high'||c._fromDB?' verified':'')+'" data-idx="'+i+'" data-key="card_number" value="'+esc(c.card_number||'')+'" oninput="updateFound(this)" onchange="onNumberChange(this)"/>'+
       '</div>'+
-      '<div><div class="cr-label">Set</div>'+
-        '<input class="cr-input'+(c.confidence==='high'||c._fromDB?' verified':'')+'" data-idx="'+i+'" data-key="set_name" value="'+esc(c.set_name||'')+'" oninput="updateFound(this)"/>'+
+      '<div>'+
+        '<div class="cr-label">Set</div>'+
+        '<input class="cr-input'+(c.confidence==='high'||c._fromDB?' verified':'')+'" data-idx="'+i+'" data-key="set_name" value="'+esc(c.set_name||'')+'" oninput="updateFound(this)" id="set-input-'+i+'"/>'+
+        '<div class="cr-badge" id="set-badge-'+i+'"></div>'+
       '</div>'+
-      '<div class="cr-actions"><div class="cr-num">'+(i+1)+'</div>'+
-        (!isFailed?'<button class="btn-fix" onclick="fixCard('+i+')">✎ Fix</button>':'')+
+      '<div class="cr-actions">'+
+        '<div class="cr-num">'+(i+1)+'</div>'+
+        '<button class="btn-fix" onclick="fixCard('+i+')" id="fix-btn-'+i+'">✎ Fix</button>'+
         '<button class="btn-del" onclick="removeFound('+i+')">✕</button>'+
       '</div>'+
       candidatesHtml+rescanHtml+
     '</div>';
   });
-  h+='</div>';
-  resultsArea.innerHTML=h;
+  h += '</div>';
+  resultsArea.innerHTML = h;
 }
 
 function pickCandidateEl(btn){
-  var idx=parseInt(btn.dataset.idx), name=btn.dataset.name, card_number=btn.dataset.num, set_name=btn.dataset.set, tcg_id=btn.dataset.id||'';
-  pickCandidate(idx,name,card_number,set_name,tcg_id);
+  var idx=parseInt(btn.dataset.idx);
+  pickCandidate(idx, btn.dataset.name, btn.dataset.num, btn.dataset.set, btn.dataset.id||'', btn.dataset.img||'');
 }
-function pickCandidate(idx, name, card_number, set_name, tcg_id){
+
+function pickCandidate(idx, name, card_number, set_name, tcg_id, imgUrl){
   if(foundCards[idx]){
     foundCards[idx].name=name; foundCards[idx].card_number=card_number;
     foundCards[idx].set_name=set_name; foundCards[idx].confidence='high';
+    if(imgUrl) foundCards[idx]._imgUrl=imgUrl;
   }
   dbLearn(name, card_number, set_name, tcg_id, 'user-pick');
-  // Save this card now
-  var id=Date.now();
-  foundCards[idx]._savedId=id;
-  cards.push({name:name,card_number:card_number,set_name:set_name,qty:1,date_scanned:new Date().toLocaleDateString(),_id:id});
-  saveCards(); renderTable();
+  // Save/update
+  fixCard(idx);
   showResultsCards(foundCards);
   toast(name+' saved!','success');
 }
@@ -1227,16 +1244,56 @@ function updateFound(el){
   if(foundCards[i]) foundCards[i][el.dataset.key]=el.value;
 }
 
+// When card number is changed manually — look up set from TCG
+function onNumberChange(el){
+  var i=parseInt(el.dataset.idx);
+  var num=el.value.trim();
+  if(!num||!foundCards[i]) return;
+  var name=(foundCards[i].name||'').replace(/[:"&]/g,' ').trim();
+  if(!name) return;
+  var numOnly=num.split('/')[0];
+  var setInput=document.getElementById('set-input-'+i);
+  var setBadge=document.getElementById('set-badge-'+i);
+  if(setBadge) setBadge.textContent='looking up…';
+  tcgFetch('name:"'+name+'" number:'+numOnly, 3).then(function(results){
+    if(!results.length){
+      // Try number only
+      return tcgFetch('number:'+numOnly, 3);
+    }
+    return results;
+  }).then(function(results){
+    if(!results.length){ if(setBadge) setBadge.textContent=''; return; }
+    var best=results[0];
+    var set=best.set?best.set.name:'';
+    var fullNum=best.number+(best.set&&best.set.printedTotal?'/'+best.set.printedTotal:'');
+    if(set && setInput){
+      setInput.value=set;
+      foundCards[i].set_name=set;
+    }
+    // Also correct the number format
+    if(fullNum && fullNum!==num){
+      el.value=fullNum;
+      foundCards[i].card_number=fullNum;
+    }
+    if(setBadge) setBadge.textContent='✓ set updated';
+    setTimeout(function(){ if(setBadge) setBadge.textContent=''; },2000);
+    // Store reference image
+    if(best.images&&best.images.small) foundCards[i]._imgUrl=best.images.small;
+    dbLearn(foundCards[i].name, fullNum||num, set, best.id, 'number-edit');
+    log('Number edit lookup: '+fullNum+' → '+set,'ok');
+  }).catch(function(e){ if(setBadge) setBadge.textContent=''; });
+}
+
 function fixCard(idx){
   var c=foundCards[idx]; if(!c) return;
-  // Re-save with updated values, learn to DB
   var updated={name:c.name||'',card_number:c.card_number||'',set_name:c.set_name||'',qty:c.qty||1,date_scanned:new Date().toLocaleDateString(),_id:c._savedId||Date.now()};
-  var i=-1;
-  for(var j=cards.length-1;j>=0;j--){ if(cards[j]._id===c._savedId){i=j;break;} }
-  if(i>=0){ cards[i]=updated; } else { cards.push(updated); }
+  if(!c._savedId){ c._savedId=updated._id; }
+  var pos=-1;
+  for(var j=cards.length-1;j>=0;j--){ if(cards[j]._id===c._savedId){pos=j;break;} }
+  if(pos>=0){ cards[pos]=updated; } else { cards.push(updated); }
   if(c.name&&c.card_number) dbLearn(c.name,c.card_number,c.set_name,'','manual');
   saveCards(); renderTable();
-  var btn=document.querySelector('#cr-'+idx+' .btn-fix');
+  var btn=document.getElementById('fix-btn-'+idx);
   if(btn){btn.textContent='✓';btn.disabled=true;}
   toast((c.name||'Card')+' updated!','success');
 }
@@ -1614,25 +1671,24 @@ function captureScan(){
     return identifyCard(k, cropB64, 'image/jpeg', name, botCrop);
   }).then(function(result){
     foundCards=[result];
-    showResultsCards([result]);
     lastHash=null;
     if(result.confidence==='high'||result.confidence==='medium'){
       autoSaveCards([result]);
       setCamStatus('ok','✓ '+result.name+(result.card_number?' · '+result.card_number:''));
       toast(result.name+' saved! Place next card…','success');
-      // Pause auto-scan for 3s so user can swap cards
       if(autoOn){
         clearInterval(autoTimer); autoTimer=null;
         var cd=document.getElementById('cam-countdown');
         if(cd) cd.textContent='next in 3s';
-        setTimeout(function(){
-          if(autoOn){ startAutoTimer(); }
-        }, 3000);
+        setTimeout(function(){ if(autoOn) startAutoTimer(); }, 3000);
       }
     } else {
-      setCamStatus('err','⚠ Could not identify — try better lighting');
-      toast('Could not identify card — try better lighting or flatter angle','error');
+      setCamStatus('err','⚠ '+( result._reason||'Could not identify'));
+      toast('Pick the correct card from the options below','error');
     }
+    // Always show results — switch to upload tab so Fix/pick is accessible
+    showResultsCards([result]);
+    switchTab('upload');
   }).catch(function(e){
     if(e!=='nocard'){
       setCamStatus('err',e.message?e.message.substring(0,50):String(e));
