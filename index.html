@@ -678,17 +678,6 @@ function doScan(){
 var TCG_CACHE = {};
 var TCG_API = 'https://api.pokemontcg.io/v2/cards';
 
-// Fetch a card image URL as base64 (direct fetch — TCG images allow CORS)
-async function fetchImageB64(url){
-  try{
-    var r = await fetch(url);
-    var blob = await r.blob();
-    return await new Promise(function(res,rej){
-      var fr=new FileReader(); fr.onload=function(){res(fr.result.split(',')[1]);}; fr.onerror=rej; fr.readAsDataURL(blob);
-    });
-  }catch(e){ return null; }
-}
-
 // Get TCG candidates for a card name, sorted newest first
 async function tcgCandidates(name){
   var safe = name.replace(/[:"]/g,' ').trim();
@@ -705,55 +694,38 @@ async function tcgCandidates(name){
   }catch(e){ log('TCG fetch err: '+e.message,'e'); return []; }
 }
 
-// Ask Claude to visually match the user's card photo against official card images
+// Ask Claude to visually match user photo against official card image URLs
+// Claude fetches image URLs directly — no downloading or base64 needed
 async function claudeImageMatch(apiKey, cardB64, cardMime, candidates){
-  // Fetch candidate images in parallel (up to 5)
-  var toFetch = candidates.slice(0,5);
-  var fetched = (await Promise.all(toFetch.map(function(c){
-    return fetchImageB64(c.images.small).then(function(b64){ return b64?{b64:b64,card:c}:null; });
-  }))).filter(Boolean);
+  var pool = candidates.slice(0,5);
+  if(!pool.length) return null;
 
-  if(!fetched.length) return null;
+  var content = [
+    {type:'image', source:{type:'base64', media_type:cardMime, data:cardB64}},
+    {type:'text', text:"A collector photographed a Pokemon card (first image).\n\nThe next "+pool.length+" images are official TCG card images that may match.\n\nCompare the photo to each official image. Look for same artwork, border style, HP value, evolution stage.\n\nRespond JSON only: {\"match_index\":0,\"confidence\":\"high\",\"reason\":\"brief reason\"}\n\nmatch_index = 0-based index of best match. confidence = high/medium/low/none. Use none if photo is unclear."}
+  ];
 
-  // Build prompt with user photo + all candidate images
-  var content = [{type:'image', source:{type:'base64', media_type:cardMime, data:cardB64}}];
-  content.push({type:'text', text:
-    'The first image is a collector\'s photo of a Pokemon card.\n\n'+
-    'The following '+fetched.length+' images are official card images from the TCG database that could be a match.\n\n'+
-    'Compare the collector\'s card to each official image. Look for:\n'+
-    '- Same artwork / illustration\n'+
-    '- Same card border style and color\n'+
-    '- Same HP value if visible\n'+
-    '- Same evolution stage or card type\n\n'+
-    'Return JSON only:\n'+
-    '{"match_index":0,"confidence":"high","reason":"artwork matches exactly"}\n\n'+
-    'match_index = 0-based index of the best matching official image\n'+
-    'confidence = "high" (certain), "medium" (likely), "low" (unsure), "none" (no match)\n'+
-    'Use "none" if the photo is too blurry, poorly lit, or no candidate looks right — do NOT guess.'
+  pool.forEach(function(c,i){
+    content.push({type:'image', source:{type:'url', url:c.images.small}});
+    content.push({type:'text', text:'['+i+'] '+c.name+' '+c.number+(c.set&&c.set.printedTotal?'/'+c.set.printedTotal:'')+(c.set?' '+c.set.name:'')});
   });
 
-  fetched.forEach(function(f,i){
-    var c=f.card;
-    content.push({type:'image', source:{type:'base64', media_type:'image/jpeg', data:f.b64}});
-    content.push({type:'text', text:'['+i+'] '+c.name+' · '+c.number+(c.set?'/'+c.set.printedTotal:'')+(c.set?' — '+c.set.name:'')});
-  });
-
-  var res = await fetch(WORKER, {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({
-      apiKey:apiKey, model:'claude-sonnet-4-20250514', max_tokens:150,
-      system:'You are a JSON-only API. Respond with valid JSON only, no markdown.',
-      messages:[{role:'user',content:content},{role:'assistant',content:'{'}]
-    })
-  });
-  var data = await res.json();
-  if(data.error){ log('Match API err: '+data.error.message,'e'); return null; }
   try{
+    var res = await fetch(WORKER, {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        apiKey:apiKey, model:'claude-sonnet-4-20250514', max_tokens:150,
+        system:'You are a JSON-only API. Respond with valid JSON only, no markdown.',
+        messages:[{role:'user', content:content},{role:'assistant', content:'{'}]
+      })
+    });
+    var data = await res.json();
+    if(data.error){ log('Match API err: '+data.error.message,'e'); return null; }
     var raw='{'+(data.content&&data.content[0]&&data.content[0].text||'');
     var result = JSON.parse(raw);
-    var idx = parseInt(result.match_index)||0;
-    if(idx<0||idx>=fetched.length) idx=0;
-    return { card: fetched[idx].card, confidence: result.confidence||'low', reason: result.reason||'', allFetched: fetched };
-  }catch(e){ return null; }
+    var idx = Math.max(0, Math.min(parseInt(result.match_index)||0, pool.length-1));
+    log('Match: ['+idx+'] '+pool[idx].name+' conf='+result.confidence+' — '+(result.reason||''),'ok');
+    return {card:pool[idx], confidence:result.confidence||'low', reason:result.reason||''};
+  }catch(e){ log('claudeImageMatch err: '+e.message,'e'); return null; }
 }
 
 // Identify a single card: DB → TCG → image match
