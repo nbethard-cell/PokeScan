@@ -399,7 +399,7 @@ var gToken = null, gTokenExp = 0;
 var savedSheets = JSON.parse(localStorage.getItem('pokescan_sheets')||'[]');
 
 // ── Prompts ───────────────────────────────────────────────────
-var PROMPT_NAMES = 'This image contains one or more Pokemon trading cards laid flat.\n\nFor EVERY card find the full Pokemon name including any suffix (EX, GX, V, VMAX, VSTAR, MEGA, TAG TEAM, ex, etc). Include Trainer card names too.\n\nCards may be in a row or 2x2 grid — find ALL of them.\n\nReturn ONLY a JSON array, no markdown:\n[{"name":"..."}]';
+var PROMPT_NAMES = 'Look at this image. If it does NOT show Pokemon trading cards, return an empty array [].\n\nIf it DOES show Pokemon trading cards, for EVERY card find the full Pokemon name including any suffix (EX, GX, V, VMAX, VSTAR, MEGA, TAG TEAM, ex, etc). Include Trainer card names.\n\nA Pokemon card has: a large name at the top, HP value, artwork, and a collector number at the bottom. If you do not see these features, return [].\n\nCards may be in a row or 2x2 grid — find ALL of them.\n\nReturn ONLY a JSON array, no markdown:\n[{"name":"..."}]';
 
 var PROMPT_NUMBER = 'You are a JSON API. Respond ONLY with a JSON object, no explanation, no markdown.\n\nThis image shows the bottom strip of a Pokemon card. Your ONLY job is to find the collector number.\n\nThe collector number:\n- Is always formatted with a slash: 044/068 or 8/82 or 118/094 or GG50/GG70 or RC31/RC32\n- Appears as small print near the very bottom edge of the card\n- Is usually bottom-left OR bottom-right corner\n- Comes after the illustrator credit (the tiny name after the illustration symbol)\n\nCRITICAL digit rules — these misreads cause the most errors:\n- The digit 1 is often misread as: T, I, l, 7\n- The digit 7 is often misread as: 1\n- The digit 0 is often misread as: O\n- The digit 5 is often misread as: S\n- The digit 8 is often misread as: B\n- If you see a letter where a digit should be, it IS a digit\n\nBefore responding, ask yourself:\n- Does every character before the slash look like a digit? If any look like letters, they are misread digits.\n- Is the number reasonable? Pokemon collector numbers are typically 3 digits or fewer before the slash.\n\nDO NOT return:\n- HP values (these are large numbers like 300, 220, 130 — no slash)\n- Attack damage numbers\n- Weakness or resistance values\n\nRespond with exactly:\n{"card_number":"..."}\n\nEmpty string ONLY if the bottom of the card is completely illegible.';
 
@@ -1479,7 +1479,16 @@ function captureScan(){
     if(result.confidence==='high'||result.confidence==='medium'){
       autoSaveCards([result]);
       setCamStatus('ok','✓ '+result.name+(result.card_number?' · '+result.card_number:''));
-      toast(result.name+' saved!','success');
+      toast(result.name+' saved! Place next card…','success');
+      // Pause auto-scan for 3s so user can swap cards
+      if(autoOn){
+        clearInterval(autoTimer); autoTimer=null;
+        var cd=document.getElementById('cam-countdown');
+        if(cd) cd.textContent='next in 3s';
+        setTimeout(function(){
+          if(autoOn){ startAutoTimer(); }
+        }, 3000);
+      }
     } else {
       setCamStatus('err','⚠ Could not identify — try better lighting');
       toast('Could not identify card — try better lighting or flatter angle','error');
