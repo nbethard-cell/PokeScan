@@ -696,35 +696,68 @@ async function tcgCandidates(name){
 
 // Ask Claude to visually match user photo against official card image URLs
 // Claude fetches image URLs directly — no downloading or base64 needed
+// Fetch image with timeout — never hang
+async function fetchB64WithTimeout(url, timeoutMs){
+  timeoutMs = timeoutMs||4000;
+  return new Promise(function(resolve){
+    var done=false;
+    var timer=setTimeout(function(){ if(!done){done=true;log('Image fetch timeout: '+url,'w');resolve(null);} },timeoutMs);
+    fetch(url).then(function(r){return r.blob();}).then(function(blob){
+      var fr=new FileReader();
+      fr.onload=function(){ if(!done){done=true;clearTimeout(timer);resolve(fr.result.split(',')[1]);} };
+      fr.onerror=function(){ if(!done){done=true;clearTimeout(timer);resolve(null);} };
+      fr.readAsDataURL(blob);
+    }).catch(function(){ if(!done){done=true;clearTimeout(timer);resolve(null);} });
+  });
+}
+
 async function claudeImageMatch(apiKey, cardB64, cardMime, candidates){
-  var pool = candidates.slice(0,5);
+  var pool = candidates.slice(0,4); // max 4 to keep message size down
   if(!pool.length) return null;
 
+  log('Fetching '+pool.length+' candidate images…');
+  // Fetch all candidate images in parallel with timeout
+  var fetched = await Promise.all(pool.map(function(c){
+    return fetchB64WithTimeout(c.images.small, 5000).then(function(b64){
+      return b64 ? {b64:b64, card:c} : null;
+    });
+  }));
+  fetched = fetched.filter(Boolean);
+  log('Fetched '+fetched.length+'/'+pool.length+' images successfully');
+
+  if(!fetched.length){
+    log('No candidate images fetched — skipping visual match','w');
+    return null;
+  }
+
+  // Build content: user photo + candidate images (all as base64)
   var content = [
     {type:'image', source:{type:'base64', media_type:cardMime, data:cardB64}},
-    {type:'text', text:"A collector photographed a Pokemon card (first image).\n\nThe next "+pool.length+" images are official TCG card images that may match.\n\nCompare the photo to each official image. Look for same artwork, border style, HP value, evolution stage.\n\nRespond JSON only: {\"match_index\":0,\"confidence\":\"high\",\"reason\":\"brief reason\"}\n\nmatch_index = 0-based index of best match. confidence = high/medium/low/none. Use none if photo is unclear."}
+    {type:'text', text:'Photo of a Pokemon card. The next '+fetched.length+' images are official TCG candidates. Compare artwork, border, HP. Return JSON: {"match_index":0,"confidence":"high","reason":"..."} — confidence: high/medium/low/none. Use none if unclear.'}
   ];
-
-  pool.forEach(function(c,i){
-    content.push({type:'image', source:{type:'url', url:c.images.small}});
+  fetched.forEach(function(f,i){
+    var c=f.card;
+    content.push({type:'image', source:{type:'base64', media_type:'image/jpeg', data:f.b64}});
     content.push({type:'text', text:'['+i+'] '+c.name+' '+c.number+(c.set&&c.set.printedTotal?'/'+c.set.printedTotal:'')+(c.set?' '+c.set.name:'')});
   });
 
+  log('Sending match request to Claude with '+fetched.length+' images…');
   try{
     var res = await fetch(WORKER, {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({
         apiKey:apiKey, model:'claude-sonnet-4-20250514', max_tokens:150,
-        system:'You are a JSON-only API. Respond with valid JSON only, no markdown.',
+        system:'JSON-only API.',
         messages:[{role:'user', content:content},{role:'assistant', content:'{'}]
       })
     });
     var data = await res.json();
     if(data.error){ log('Match API err: '+data.error.message,'e'); return null; }
     var raw='{'+(data.content&&data.content[0]&&data.content[0].text||'');
+    log('Match raw response: '+raw.substring(0,80),'ok');
     var result = JSON.parse(raw);
-    var idx = Math.max(0, Math.min(parseInt(result.match_index)||0, pool.length-1));
-    log('Match: ['+idx+'] '+pool[idx].name+' conf='+result.confidence+' — '+(result.reason||''),'ok');
-    return {card:pool[idx], confidence:result.confidence||'low', reason:result.reason||''};
+    var idx = Math.max(0, Math.min(parseInt(result.match_index)||0, fetched.length-1));
+    log('Matched ['+idx+']: '+fetched[idx].card.name+' conf='+result.confidence,'ok');
+    return {card:fetched[idx].card, confidence:result.confidence||'low', reason:result.reason||''};
   }catch(e){ log('claudeImageMatch err: '+e.message,'e'); return null; }
 }
 
@@ -743,7 +776,9 @@ async function identifyCard(apiKey, cardB64, cardMime, nameHint){
   if(!name) return {name:'', card_number:'', set_name:'', confidence:'none', _reason:'No card name found'};
 
   // Get TCG candidates
+  log('Fetching TCG candidates for: '+name);
   var candidates = await tcgCandidates(name);
+  log('Got '+candidates.length+' candidates for "'+name+'"');
   if(!candidates.length){
     return {name:name, card_number:'', set_name:'', confidence:'none', _reason:'Card not found in TCG database — check spelling'};
   }
