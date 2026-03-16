@@ -799,13 +799,17 @@ async function claudeImageMatch(apiKey, cardB64, cardMime, candidates){
   }catch(e){ log('claudeImageMatch err: '+e.message,'e'); return null; }
 }
 
-// Identify a single card: DB → TCG → image match
-async function identifyCard(apiKey, cardB64, cardMime, nameHint){
+// Identify a single card:
+// 1. DB lookup (instant)
+// 2. Read number from crop via Claude
+// 3. Validate number against TCG API — auto-fix digit swaps
+// 4. If still no match, show candidates for user to pick
+async function identifyCard(apiKey, cardB64, cardMime, nameHint, cropB64){
   // Fast path: DB lookup
   if(nameHint){
     var hit = dbLookup(nameHint);
     if(hit){
-      log('DB: "'+nameHint+'" → '+hit.card_number+' ('+hit.hits+'x seen)','ok');
+      log('DB hit: "'+nameHint+'" → '+hit.card_number,'ok');
       return {name:hit.name||nameHint, card_number:hit.card_number, set_name:hit.set_name, confidence:'high', _fromDB:true, _dbHits:hit.hits};
     }
   }
@@ -813,38 +817,134 @@ async function identifyCard(apiKey, cardB64, cardMime, nameHint){
   var name = nameHint||'';
   if(!name) return {name:'', card_number:'', set_name:'', confidence:'none', _reason:'No card name found'};
 
-  // Get TCG candidates
+  // Read number from bottom crop
+  log('Reading number for: '+name);
+  var rawNum = cropB64 ? await readNumber(apiKey, cropB64) : '';
+  log('Raw number: "'+rawNum+'"');
+
+  // Get TCG candidates for this name
   log('Fetching TCG candidates for: '+name);
   var candidates = await tcgCandidates(name);
-  log('Got '+candidates.length+' candidates for "'+name+'"');
+  log('Got '+candidates.length+' candidates');
+
   if(!candidates.length){
-    return {name:name, card_number:'', set_name:'', confidence:'none', _reason:'Card not found in TCG database — check spelling'};
+    // Not in TCG DB — save with whatever Claude read
+    return {name:name, card_number:rawNum, set_name:'', confidence: rawNum?'medium':'none',
+      _reason: rawNum ? 'Not in TCG database — number from image' : 'Card not found in TCG database'};
   }
 
-  // Only one candidate — trust it at medium
-  if(candidates.length===1){
-    var c=candidates[0];
-    var num=c.number+(c.set&&c.set.printedTotal?'/'+c.set.printedTotal:'');
-    dbLearn(c.name,num,c.set?c.set.name:'',c.id,'tcg-only');
-    return {name:c.name, card_number:num, set_name:c.set?c.set.name:'', confidence:'medium', tcg_id:c.id};
+  // Try to match raw number against candidates
+  var matched = matchNumber(rawNum, candidates);
+  if(matched){
+    var num=matched.number+(matched.set&&matched.set.printedTotal?'/'+matched.set.printedTotal:'');
+    var set=matched.set?matched.set.name:'';
+    log('Exact TCG match: '+matched.name+' '+num,'ok');
+    dbLearn(matched.name, num, set, matched.id, 'tcg-match');
+    return {name:matched.name, card_number:num, set_name:set, confidence:'high', tcg_id:matched.id};
   }
 
-  // Multiple candidates — image match
-  var match = await claudeImageMatch(apiKey, cardB64, cardMime, candidates);
-  if(!match||match.confidence==='none'){
-    // Return candidates so UI can show "pick one" options
-    return {name:name, card_number:'', set_name:'', confidence:'none',
-      _reason: match ? 'Image unclear — try better lighting or a flatter angle' : 'Could not fetch candidate images',
-      _candidates: candidates.slice(0,4)};
+  // Try digit-swap variants on the number
+  if(rawNum){
+    var fixed = await tcgFixNumber(name, rawNum, candidates);
+    if(fixed){
+      var num=fixed.number+(fixed.set&&fixed.set.printedTotal?'/'+fixed.set.printedTotal:'');
+      var set=fixed.set?fixed.set.name:'';
+      log('Digit-swap fix: "'+rawNum+'" → '+num,'ok');
+      dbLearn(fixed.name, num, set, fixed.id, 'digit-fix');
+      return {name:fixed.name, card_number:num, set_name:set, confidence:'high', tcg_id:fixed.id};
+    }
   }
 
-  var best=match.card;
-  var num=best.number+(best.set&&best.set.printedTotal?'/'+best.set.printedTotal:'');
-  var set=best.set?best.set.name:'';
-  log('Matched: '+best.name+' '+num+' ['+match.confidence+'] '+match.reason,'ok');
+  // No number match — show candidates for user to pick
+  log('No number match for "'+rawNum+'" — showing '+candidates.length+' candidates','w');
+  return {name:name, card_number:rawNum, set_name:'', confidence:'low',
+    _reason:'Number unclear — pick the correct card below',
+    _candidates:candidates.slice(0,6)};
+}
 
-  if(match.confidence==='high') dbLearn(best.name,num,set,best.id,'image-match');
-  return {name:best.name, card_number:num, set_name:set, confidence:match.confidence, _reason:match.reason, tcg_id:best.id};
+// Read the collector number from a bottom-crop image
+async function readNumber(apiKey, cropB64){
+  var prompt = [
+    'This image shows the bottom strip of a Pokemon card. Find the collector number.',
+    'The collector number always has a slash: 044/068 or 8/82 or 118/094 or GG50/GG70',
+    'Tiny print at very bottom edge, bottom-left or bottom-right corner, after the illustrator credit.',
+    'CRITICAL: 1 is often misread as I, l, T, or 7. 0 misread as O. Check carefully.',
+    'Do NOT return HP values, attack damage, or weakness values.',
+    'Return JSON only: {"number":"044/068"}',
+    'Use empty string if completely unreadable.'
+  ].join('\n');
+  try{
+    var res = await fetch(WORKER, {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        apiKey:apiKey, model:'claude-sonnet-4-20250514', max_tokens:100,
+        system:'JSON-only API.',
+        messages:[
+          {role:'user', content:[
+            {type:'image', source:{type:'base64', media_type:'image/jpeg', data:cropB64}},
+            {type:'text', text:prompt}
+          ]},
+          {role:'assistant', content:'{'}
+        ]
+      })
+    });
+    var d = await res.json();
+    if(d.error) return '';
+    var raw = '{'+(d.content&&d.content[0]&&d.content[0].text||'');
+    var parsed = JSON.parse(raw);
+    return parsed.number||parsed.card_number||'';
+  }catch(e){ return ''; }
+}
+
+// Try to match a raw number against a list of TCG candidates
+function matchNumber(rawNum, candidates){
+  if(!rawNum) return null;
+  var n = rawNum.split('/')[0].replace(/[^0-9A-Za-z]/g,'').toUpperCase();
+  for(var i=0;i<candidates.length;i++){
+    var cn = (candidates[i].number||'').replace(/[^0-9A-Za-z]/g,'').toUpperCase();
+    if(cn===n) return candidates[i];
+  }
+  return null;
+}
+
+// Try digit-swap variants against candidates (no extra API calls)
+function tcgFixNumber(name, rawNum, candidates){
+  var n = rawNum.split('/')[0].replace(/[^0-9A-Za-z]/g,'').toUpperCase();
+  // Common swaps
+  var swaps = [['1','7'],['7','1'],['1','I'],['I','1'],['0','O'],['O','0'],['5','S'],['S','5'],['8','B'],['B','8'],['1','T'],['T','1'],['1','L'],['L','1']];
+  var variants = new Set();
+  for(var pos=0;pos<n.length;pos++){
+    swaps.forEach(function(sw){
+      if(n[pos]===sw[0]) variants.add(n.slice(0,pos)+sw[1]+n.slice(pos+1));
+    });
+  }
+  // Check variants against candidates
+  for(var v of variants){
+    var found = candidates.find(function(c){ return (c.number||'').replace(/[^0-9A-Za-z]/g,'').toUpperCase()===v; });
+    if(found) return Promise.resolve(found);
+  }
+  // No local match — try TCG API with variants (up to 3 most likely)
+  var varArr = Array.from(variants).slice(0,3);
+  return Promise.all(varArr.map(function(v){
+    return tcgFetch('name:"'+name.replace(/[:"&]/g,' ').trim()+'" number:'+v, 3)
+      .then(function(r){ return r.length ? r[0] : null; });
+  })).then(function(results){
+    return results.find(function(r){ return r!==null; })||null;
+  });
+}
+
+// Build a tight bottom crop from a canvas for number reading
+function buildBottomCrop(canvas){
+  if(!canvas||!canvas.width) return null;
+  var dw=canvas.width, dh=canvas.height;
+  var botH=Math.round(dh*0.12);
+  if(botH<30) botH=Math.round(dh*0.18);
+  var scale=Math.min(8,1200/dw);
+  var bc=document.createElement('canvas');
+  bc.width=Math.round(dw*scale); bc.height=Math.round(botH*scale);
+  var ctx=bc.getContext('2d');
+  ctx.drawImage(canvas,0,dh-botH,dw,botH,0,0,bc.width,bc.height);
+  boostContrast(ctx,bc.width,bc.height);
+  return bc.toDataURL('image/jpeg',0.95).split(',')[1];
 }
 
 // Core Claude API call
@@ -888,7 +988,7 @@ async function scanImage(b64, crops, cardCount){
   // Identify each card — use its individual crop for image matching
   return await Promise.all(nameArr.map(function(c,i){
     var cardB64 = crops[i]||b64;
-    return identifyCard(k, cardB64, 'image/jpeg', c.name||'');
+    return identifyCard(k, cardB64, 'image/jpeg', c.name||'', cardB64);
   }));
 }
 
@@ -1509,7 +1609,9 @@ function captureScan(){
     if(!nameArr.length){ throw new Error('No card name found — adjust position or lighting'); }
     var name=nameArr[0].name||'';
     setCamStatus('scanning','Identifying '+name+'…');
-    return identifyCard(k, cropB64, 'image/jpeg', name);
+    // Build tight bottom crop for number reading
+    var botCrop = buildBottomCrop(freezeCanvas);
+    return identifyCard(k, cropB64, 'image/jpeg', name, botCrop);
   }).then(function(result){
     foundCards=[result];
     showResultsCards([result]);
