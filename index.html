@@ -678,8 +678,40 @@ function doScan(){
 var TCG_CACHE = {};
 var TCG_API = 'https://api.pokemontcg.io/v2/cards';
 
+// Trainer card names — name-only search returns too many unrelated results
+var TRAINER_NAMES = [
+  'potion','super potion','hyper potion','max potion','full restore','antidote','full heal',
+  'revive','max revive','rare candy','switch','escape rope','ultra ball','great ball',
+  'poke ball','master ball','nest ball','timer ball','quick ball','level ball','heavy ball',
+  'dusk ball','repeat ball','net ball','dive ball','luxury ball','premier ball',
+  'marnie','boss\'s orders','professor\'s research','professor magnolia','professor juniper',
+  'cynthia','lillie','sonia','hop','bede','nessa','raihan','melony','piers','oleana',
+  'n','cheren','bianca','skyla','colress','shauna','lysandre','serena','clemont',
+  'team rocket\'s handiwork','giovanni','archie','maxie','cyrus','ghetsis','lysandre',
+  'judge','acro bike','devolution spray','energy retrieval','energy recycler',
+  'energy search','energy switch','exp share','field blower','float stone',
+  '友好な拳','guzma','hau','mallow','ilima','acerola','hapu','kukui','plumeria',
+  'stadium','gym','city','route','cave','forest','laboratory','power plant',
+  'supporter','item','tool','stadium'
+];
+
+function isTrainerCard(name){
+  if(!name) return false;
+  var lower = name.toLowerCase().trim();
+  // Check explicit list
+  if(TRAINER_NAMES.some(function(t){ return lower===t || lower.startsWith(t+' '); })) return true;
+  // Pokémon cards have these suffixes — if absent AND name is short it's likely a trainer
+  var pokemonSuffixes = /\b(ex|EX|GX|V|VMAX|VSTAR|mega|MEGA|lv\.x)\b/;
+  if(!pokemonSuffixes.test(name) && lower.split(' ').length <= 3){
+    // Extra heuristic: common trainer words
+    if(/\b(ball|potion|spray|retrieval|recycler|search|switch|rope|candy|restore|heal|revive|blower|stone|bike|pack|box|chest|bag|rod|hook|lure|wing|feather|claw|fang|scale|shard|fossil|brace|band|helmet|badge|coin|dice|mat|sheet|ticket|pass|card|book|map|radar|scope|lens|glasses|goggles|gloves|boots|coat|cape|mask|crown|scepter|orb|gem|crystal|prism|star|moon|sun|fire|water|leaf|thunder|ice|dragon|dark|steel|fairy|normal|fighting|poison|ground|flying|psychic|bug|rock|ghost|electric|grass)\b/i.test(lower)) return true;
+  }
+  return false;
+}
+
 // Get TCG candidates for a card name, sorted newest first
 async function tcgFetch(query, pageSize){
+  // Wrap fetch with 12s timeout so it never hangs
   return new Promise(function(resolve){
     var done=false;
     var timer=setTimeout(function(){
@@ -717,6 +749,13 @@ async function tcgCandidates(name){
   if(!name) return [];
   var cacheKey = 'cands:'+name.toLowerCase();
   if(TCG_CACHE[cacheKey]) return TCG_CACHE[cacheKey];
+
+  // Trainer fast-path: skip name-only search, go straight to name+number lookup
+  if(isTrainerCard(name)){
+    log('Trainer card detected: "'+name+'" — skipping name-only search','w');
+    TCG_CACHE[cacheKey] = [];
+    return [];
+  }
 
   // Strip special chars for query — & breaks Lucene syntax
   // For TAG TEAM cards like "A & B & C GX" try full name first, then first pokemon only
@@ -868,6 +907,24 @@ async function identifyCard(apiKey, cardB64, cardMime, nameHint, cropB64){
   log('Got '+candidates.length+' candidates');
 
   if(!candidates.length){
+    // Trainer fast-path: do a quick name+number lookup instead of blocking
+    if(isTrainerCard(name) && rawNum){
+      var numOnly = rawNum.split('/')[0];
+      log('Trainer fast-path: name+number lookup for "'+name+'" #'+numOnly,'w');
+      var trainerResults = await tcgFetch('name:"'+name.replace(/[:"&]/g,' ').trim()+'" number:'+numOnly, 3);
+      if(trainerResults.length){
+        var tr = trainerResults[0];
+        var trNum = tr.number+(tr.set&&tr.set.printedTotal?'/'+tr.set.printedTotal:'');
+        var trSet = tr.set?tr.set.name:'';
+        log('Trainer TCG match: '+tr.name+' '+trNum,'ok');
+        dbLearn(tr.name, trNum, trSet, tr.id, 'trainer-match');
+        return {name:tr.name, card_number:trNum, set_name:trSet, confidence:'high', tcg_id:tr.id, _imgUrl:tr.images&&tr.images.small||'', _candidates:[]};
+      }
+      // No TCG match — save name+number as-is, don't block
+      log('Trainer: no TCG match, saving as-is','w');
+      return {name:name, card_number:rawNum, set_name:'', confidence:'medium',
+        _reason:'Trainer card — saved from image', _candidates:[]};
+    }
     // Not in TCG DB — save with whatever Claude read
     return {name:name, card_number:rawNum, set_name:'', confidence: rawNum?'medium':'none',
       _reason: rawNum ? 'Not in TCG database — number from image' : 'Card not found in TCG database', _candidates:[]};
