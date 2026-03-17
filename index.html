@@ -680,13 +680,12 @@ var TCG_API = 'https://api.pokemontcg.io/v2/cards';
 
 // Get TCG candidates for a card name, sorted newest first
 async function tcgFetch(query, pageSize){
-  // Wrap fetch with 8s timeout so it never hangs
   return new Promise(function(resolve){
     var done=false;
     var timer=setTimeout(function(){
       if(!done){ done=true; log('TCG fetch timeout for: '+query,'w'); resolve([]); }
-    }, 8000);
-    fetch(TCG_API+'?q='+encodeURIComponent(query)+'&pageSize='+(pageSize||8)+'&orderBy=-set.releaseDate')
+    }, 12000);
+    fetch(TCG_API+'?q='+encodeURIComponent(query)+'&pageSize='+(pageSize||8))
       .then(function(r){ return r.json(); })
       .then(function(d){
         if(!done){ done=true; clearTimeout(timer); resolve((d.data||[]).filter(function(c){return c.images&&c.images.small;})); }
@@ -695,6 +694,23 @@ async function tcgFetch(query, pageSize){
         if(!done){ done=true; clearTimeout(timer); log('TCG fetch err: '+e.message,'e'); resolve([]); }
       });
   });
+}
+
+// Detect if a card name is a Trainer/Item/Stadium (not a Pokemon)
+function isTrainerCard(name){
+  var n = (name||'').toLowerCase();
+  // Common trainer cards — these won't match well by name in TCG API
+  var trainers = ['potion','super potion','hyper potion','max potion','full restore','revive','max revive',
+    'pokeball','great ball','ultra ball','master ball','net ball','nest ball','quick ball',
+    'marnie','professor','lillie','cynthia','sonia','hop','bede','nessa','raihan','melony',
+    'boss','roxanne','iono','penny','arven','nemona','jacq',
+    'switch','escape rope','air balloon','choice band','muscle band','tool scrapper',
+    'stadium','gym','tower','city','town','forest','cave','bridge','road','park',
+    'energy retrieval','rescue','communication','research','draw','draw card',
+    'secret','rare candy','cape','belt','scarf','goggles','helmet','coat'];
+  return trainers.some(function(t){ return n===t || n.startsWith(t+' ') || n.endsWith(' '+t); }) ||
+    // Also detect by lack of Pokemon suffixes
+    (!/(ex|gx|vmax|vstar|v|mega|tag team|\-ex|\-gx)/i.test(name) && n.split(' ').length <= 2 && !/(pokemon|pikachu|charizard|mewtwo|gengar|eevee|snorlax|mew|lucario|gardevoir|rayquaza|dragonite|gyarados|blastoise|venusaur)/i.test(name));
 }
 
 async function tcgCandidates(name){
@@ -822,7 +838,31 @@ async function identifyCard(apiKey, cardB64, cardMime, nameHint, cropB64){
   var rawNum = cropB64 ? await readNumber(apiKey, cropB64) : '';
   log('Raw number: "'+rawNum+'"');
 
-  // Get TCG candidates for this name
+  // Trainer/Item/Stadium fast path — search by name+number, skip slow name-only search
+  if(isTrainerCard(name)){
+    log('Trainer card detected: '+name+' — using number-first lookup');
+    if(rawNum){
+      var numOnly = rawNum.split('/')[0];
+      var safeName = name.replace(/[:"&]/g,' ').trim();
+      var trainerResults = await tcgFetch('name:"'+safeName+'" number:'+numOnly, 5);
+      if(!trainerResults.length) trainerResults = await tcgFetch('number:'+numOnly+' name:"'+safeName+'"', 5);
+      if(trainerResults.length){
+        var best = trainerResults[0];
+        var num = best.number+(best.set&&best.set.printedTotal?'/'+best.set.printedTotal:'');
+        var set = best.set?best.set.name:'';
+        dbLearn(best.name||name, num, set, best.id, 'trainer-match');
+        log('Trainer matched: '+best.name+' '+num+' ('+set+')','ok');
+        return {name:best.name||name, card_number:num, set_name:set, confidence:'high', tcg_id:best.id,
+          _imgUrl:best.images&&best.images.small||''};
+      }
+    }
+    // No TCG match — just save name + number as-is, medium confidence
+    log('Trainer not in TCG — saving as-is: '+name+' '+rawNum,'w');
+    return {name:name, card_number:rawNum, set_name:'', confidence:rawNum?'medium':'low',
+      _reason:rawNum?'Trainer card — set not confirmed':'Could not read number', _candidates:[]};
+  }
+
+  // Get TCG candidates for this name (Pokemon)
   log('Fetching TCG candidates for: '+name);
   var candidates = await tcgCandidates(name);
   log('Got '+candidates.length+' candidates');
