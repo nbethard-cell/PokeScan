@@ -735,8 +735,9 @@ function isTrainerCard(name){
   // Regional/form prefixes that appear on Pokémon cards — never trainers
   var pokemonPrefixes = /^(galarian|alolan|hisuian|paldean|shadow|radiant|prism star|dusk mane|dawn wings|origin|crowned|rapid strike|single strike|fusion strike|ice rider|shadow rider)/i;
   return trainers.some(function(t){ return n===t || n.startsWith(t+' ') || n.endsWith(' '+t); }) ||
-    // Also detect by lack of Pokemon suffixes — but never flag regional Pokemon forms
-    (!/(ex|gx|vmax|vstar|v|mega|tag team|\-ex|\-gx)/i.test(name) && n.split(' ').length <= 2 && !pokemonPrefixes.test(name) && !/(pokemon|pikachu|charizard|mewtwo|gengar|eevee|snorlax|mew|lucario|gardevoir|rayquaza|dragonite|gyarados|blastoise|venusaur)/i.test(name));
+    // 2-word names with no Pokemon suffix are likely trainers (e.g. "Professor Elm", "Giovanni's")
+    // Single-word names are almost always Pokemon — only flag via explicit list above
+    (!/(ex|gx|vmax|vstar|v|mega|tag team|\-ex|\-gx)/i.test(name) && n.split(' ').length === 2 && !pokemonPrefixes.test(name) && !/(pokemon|pikachu|charizard|mewtwo|gengar|eevee|snorlax|mew|lucario|gardevoir|rayquaza|dragonite|gyarados|blastoise|venusaur)/i.test(name));
 }
 
 async function tcgCandidates(name){
