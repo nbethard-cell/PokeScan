@@ -352,6 +352,11 @@ tr:hover td{background:rgba(255,255,255,0.02);}
       <span class="pchev" id="log-chev">▼</span>
     </div>
     <div class="pbody open" id="log-body">
+      <div style="display:flex;gap:6px;margin-bottom:6px;">
+        <button class="tbtn" onclick="copyLog()" style="flex:1;font-size:0.7rem;padding:5px 0;">📋 Copy</button>
+        <button class="tbtn" onclick="shareLog()" style="flex:1;font-size:0.7rem;padding:5px 0;">↗ Share</button>
+        <button class="tbtn" onclick="clearLog()" style="flex:1;font-size:0.7rem;padding:5px 0;">🗑 Clear</button>
+      </div>
       <div class="log-wrap" id="log-out"></div>
     </div>
   </div>
@@ -1804,12 +1809,48 @@ function toggleLog(){
   var b=document.getElementById('log-body'), ch=document.getElementById('log-chev');
   b.classList.toggle('open'); ch.textContent=b.classList.contains('open')?'▲':'▼';
 }
+var logBuffer=[];
 function log(msg,cls){
   var el=document.getElementById('log-out'); if(!el) return;
+  var line=new Date().toLocaleTimeString()+' '+msg;
+  logBuffer.push(line);
   var d=document.createElement('div'); d.className=cls?'log-'+cls:'';
-  d.textContent=new Date().toLocaleTimeString()+' '+msg;
+  d.textContent=line;
   el.appendChild(d); el.scrollTop=el.scrollHeight;
   if(el.children.length>200) el.removeChild(el.firstChild);
+}
+function copyLog(){
+  var text=logBuffer.join('\n');
+  navigator.clipboard.writeText(text).then(function(){
+    toast('Log copied!','success');
+  }).catch(function(){
+    var ta=document.createElement('textarea');
+    ta.value=text; document.body.appendChild(ta);
+    ta.select(); document.execCommand('copy');
+    document.body.removeChild(ta);
+    toast('Log copied!','success');
+  });
+}
+function shareLog(){
+  var text=logBuffer.join('\n');
+  if(navigator.share){
+    navigator.share({title:'PokéScan Log',text:text}).catch(function(){});
+  } else {
+    navigator.clipboard.writeText(text).then(function(){
+      toast('Log copied to clipboard (share not supported)','success');
+    }).catch(function(){
+      var ta=document.createElement('textarea');
+      ta.value=text; document.body.appendChild(ta);
+      ta.select(); document.execCommand('copy');
+      document.body.removeChild(ta);
+      toast('Log copied to clipboard','success');
+    });
+  }
+}
+function clearLog(){
+  logBuffer=[];
+  var el=document.getElementById('log-out');
+  if(el) el.innerHTML='';
 }
 
 // ── Utilities ─────────────────────────────────────────────────
