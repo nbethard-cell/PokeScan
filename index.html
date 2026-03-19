@@ -391,6 +391,7 @@ var imageQueue = [], queueTotal = 0, queueDone = 0, batchResults = [];
 var camStream = null, camScanning = false;
 var autoOn = false, autoSec = 5, autoTimer = null, autoCdown = 0;
 var lastHash = null;
+var scanFromCamera = false; // track if we switched to upload from camera
 var freezeCanvas = null;
 
 // Google Sheets
@@ -1322,6 +1323,7 @@ function pickCandidate(idx, name, card_number, set_name, tcg_id, imgUrl){
   fixCard(idx);
   showResultsCards(foundCards);
   toast(name+' saved!','success');
+  if(scanFromCamera){ scanFromCamera=false; switchTab('camera'); }
 }
 
 function updateFound(el){
@@ -1381,6 +1383,7 @@ function fixCard(idx){
   var btn=document.getElementById('fix-btn-'+idx);
   if(btn){btn.textContent='✓';btn.disabled=true;}
   toast((c.name||'Card')+' updated!','success');
+  if(scanFromCamera){ scanFromCamera=false; switchTab('camera'); }
 }
 
 function removeFound(idx){
@@ -1774,6 +1777,7 @@ function captureScan(){
     showResultsCards([result]);
     // Only switch to upload tab for low confidence — stay on camera for high confidence
     if(result.confidence !== 'high'){
+      scanFromCamera = true;
       switchTab('upload');
     }
   }).catch(function(e){
