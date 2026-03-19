@@ -695,20 +695,6 @@ var TRAINER_NAMES = [
   'supporter','item','tool','stadium'
 ];
 
-function isTrainerCard(name){
-  if(!name) return false;
-  var lower = name.toLowerCase().trim();
-  // Check explicit list
-  if(TRAINER_NAMES.some(function(t){ return lower===t || lower.startsWith(t+' '); })) return true;
-  // Pokémon cards have these suffixes — if absent AND name is short it's likely a trainer
-  var pokemonSuffixes = /\b(ex|EX|GX|V|VMAX|VSTAR|mega|MEGA|lv\.x)\b/;
-  if(!pokemonSuffixes.test(name) && lower.split(' ').length <= 3){
-    // Extra heuristic: common trainer words
-    if(/\b(ball|potion|spray|retrieval|recycler|search|switch|rope|candy|restore|heal|revive|blower|stone|bike|pack|box|chest|bag|rod|hook|lure|wing|feather|claw|fang|scale|shard|fossil|brace|band|helmet|badge|coin|dice|mat|sheet|ticket|pass|card|book|map|radar|scope|lens|glasses|goggles|gloves|boots|coat|cape|mask|crown|scepter|orb|gem|crystal|prism|star|moon|sun|fire|water|leaf|thunder|ice|dragon|dark|steel|fairy|normal|fighting|poison|ground|flying|psychic|bug|rock|ghost|electric|grass)\b/i.test(lower)) return true;
-  }
-  return false;
-}
-
 // Get TCG candidates for a card name, sorted newest first
 async function tcgFetch(query, pageSize){
   // Wrap fetch with 12s timeout so it never hangs
@@ -740,9 +726,11 @@ function isTrainerCard(name){
     'stadium','gym','tower','city','town','forest','cave','bridge','road','park',
     'energy retrieval','rescue','communication','research','draw','draw card',
     'secret','rare candy','cape','belt','scarf','goggles','helmet','coat'];
+  // Regional/form prefixes that appear on Pokémon cards — never trainers
+  var pokemonPrefixes = /^(galarian|alolan|hisuian|paldean|shadow|radiant|prism star|dusk mane|dawn wings|origin|crowned|rapid strike|single strike|fusion strike|ice rider|shadow rider)/i;
   return trainers.some(function(t){ return n===t || n.startsWith(t+' ') || n.endsWith(' '+t); }) ||
-    // Also detect by lack of Pokemon suffixes
-    (!/(ex|gx|vmax|vstar|v|mega|tag team|\-ex|\-gx)/i.test(name) && n.split(' ').length <= 2 && !/(pokemon|pikachu|charizard|mewtwo|gengar|eevee|snorlax|mew|lucario|gardevoir|rayquaza|dragonite|gyarados|blastoise|venusaur)/i.test(name));
+    // Also detect by lack of Pokemon suffixes — but never flag regional Pokemon forms
+    (!/(ex|gx|vmax|vstar|v|mega|tag team|\-ex|\-gx)/i.test(name) && n.split(' ').length <= 2 && !pokemonPrefixes.test(name) && !/(pokemon|pikachu|charizard|mewtwo|gengar|eevee|snorlax|mew|lucario|gardevoir|rayquaza|dragonite|gyarados|blastoise|venusaur)/i.test(name));
 }
 
 async function tcgCandidates(name){
@@ -1783,9 +1771,11 @@ function captureScan(){
       setCamStatus('err','⚠ '+( result._reason||'Could not identify'));
       toast('Pick the correct card from the options below','error');
     }
-    // Always show results — switch to upload tab so Fix/pick is accessible
     showResultsCards([result]);
-    switchTab('upload');
+    // Only switch to upload tab for low confidence — stay on camera for high confidence
+    if(result.confidence !== 'high'){
+      switchTab('upload');
+    }
   }).catch(function(e){
     if(e!=='nocard'){
       setCamStatus('err',e.message?e.message.substring(0,50):String(e));
