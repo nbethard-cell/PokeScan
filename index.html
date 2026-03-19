@@ -752,20 +752,21 @@ async function tcgCandidates(name){
   }
 
   // Strip special chars for query — & breaks Lucene syntax
-  // For TAG TEAM cards like "A & B & C GX" try full name first, then first pokemon only
   var safe = name.replace(/[:"&]/g,' ').replace(/\s+/g,' ').trim();
 
   var results = await tcgFetch('name:"'+safe+'"', 8);
   log('TCG: '+results.length+' results for "'+safe+'"');
 
-  // Fallback 1: if TAG TEAM / multi-pokemon, try just first name before &
+  // Fallback 1: TAG TEAM cards (A & B GX) — search first pokemon name + suffix as unquoted wildcard
   if(!results.length && name.includes('&')){
-    var firstName = name.split('&')[0].trim();
-    // Also strip suffixes like GX, EX etc for broader match
-    var baseName = firstName.replace(/\s+(GX|EX|V|VMAX|VSTAR|ex)$/i,'').trim();
-    log('TAG TEAM fallback: trying "'+baseName+'"','w');
-    results = await tcgFetch('name:"'+baseName+'"', 8);
-    log('Fallback got '+results.length+' results');
+    var tagParts = name.split('&');
+    var firstPoke = tagParts[0].trim().replace(/[:"]/g,'');
+    var suffix = (name.match(/\s+(GX|EX|VMAX|VSTAR|V|MEGA|ex)$/i)||[])[1]||'GX';
+    var tagQuery = firstPoke+' '+suffix;
+    log('TAG TEAM fallback: trying "'+tagQuery+'"','w');
+    results = await tcgFetch('name:'+firstPoke+'* subtypes:TAG', 8);
+    if(!results.length) results = await tcgFetch('name:"'+firstPoke+' & '+tagParts[1].trim().replace(/[:"]/g,'').replace(/\s+(GX|EX|VMAX|VSTAR|V|MEGA|ex)$/i,'')+'"', 8);
+    log('TAG TEAM fallback got '+results.length+' results');
   }
 
   // Fallback 2: drop suffix (EX, GX, V etc) and try broader search
